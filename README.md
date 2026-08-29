@@ -9,6 +9,9 @@ decision to a person.
 
 Built for the **Card Dispute Evidence Reconstruction & Resolution** challenge.
 
+**Full feature list, mapped to the challenge's capability expectations — including
+how the dynamic next-best-action selection works: [FEATURES.md](FEATURES.md).**
+
 ---
 
 ## The problem

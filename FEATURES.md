@@ -43,6 +43,59 @@ expectations, word for word in short form.
   factor and the blocked list are written to the audit trail; the UI shows the
   estimated chance of success.
 
+### How the dynamic selection works
+
+The planner (`next_best_action` in `service.py`) runs a **build → filter →
+score → propose** cycle every time the case changes.
+
+**Current state generates the candidates.** Each run re-reads the case fresh —
+open exceptions, evidence present, position confidences, the reason-code rules —
+and candidates only exist if the state creates them: an open contradiction
+produces "ask the cardholder who signed"; a missing required item produces
+"request it from the merchant"; a merchant position of 70% or more with complete
+evidence and no contradiction makes representment eligible. Different state,
+different candidate set.
+
+**Dependencies are a hard filter, applied before any scoring.** An action whose
+precondition is not met is excluded, not down-ranked, and the blocker is written
+down — `submit_representment: blocked by an open contradiction` — so "why didn't
+you represent?" always has an audit-trail answer.
+
+**Deadlines, authority and expected value are the score:**
+
+```
+score = P(success) × amount factor × deadline urgency × authority
+```
+
+- *Expected value* = the model's success probability × an amount factor
+  (`min(amount/500, 1)`), so the same move is worth more on a bigger dispute.
+- *Deadlines* multiply the score as the representment window closes (×1.2 inside
+  15 days, ×1.5 inside 7, ×2.0 inside 48 hours) — and under 48 hours with no
+  eligible action, the planner escalates to a person instead of proposing.
+- *Authority* reads the live approval policy from the database: an action only
+  the Team Lead can sign scores ×0.9 and the proposal says "needs team lead".
+  Change the policy in Administration and the ranking follows, no code.
+
+The winner is proposed with its full working attached to the audit entry:
+`{"p_success": 0.692, "score": 0.18, "urgency": 1.0, "authority": 1.0,
+"amount_factor": 0.26, "blocked": [...]}`.
+
+**Why this is not a fixed happy path:** the recommendation changes as the state
+does. At case open the planner asks the merchant for the delivery record
+(P 76%). When that record arrives late and contradicts the cardholder, the
+missing exception resolves, a contradiction opens, the positions flip — and the
+planner drops the old recommendation and asks the cardholder who signed (P 69%),
+while representment stays blocked by name. Resolve the contradiction with the
+merchant position at 70%+ and representment becomes the top candidate. The same
+code ran every time; the state chose a different action each time. The
+re-evaluation trigger makes this automatic: any material evidence change re-runs
+the journey, and the planner is its last step, so an outdated recommendation
+cannot survive new facts.
+
+One honest boundary: the candidate types are the permitted dispute actions from
+the reason-code rules. The planner chooses dynamically *among permitted actions*
+— which is what the requirement asks — and does not invent new action types.
+
 ## 3. Long-running state, deadlines and no repeated actions
 
 - **The case is the database** — evidence, positions, gaps, deadlines, actions
