@@ -101,9 +101,12 @@ idempotent and approval-gated, and the analyst owns the liability decision.
   model, tools and skills.
 - **Tools** — 20 functions over the schema (read / derive / action / control).
   Only one, `execute_action`, touches the (mock) external world.
-- **Skills** — nine deterministic procedures that run the journey. The reasoning
-  is rule-based so the demo is robust and offline; an optional LLM narrative can
-  be enabled with `CARD_DISPUTE_LLM=1`.
+- **Agents** — two agents, each with a fixed *soul* (role, rules, safety limits):
+  **A1 Evidence Reconciliation** and **A2 Dispute Case Planner** (`GET /api/agents`).
+- **Skills** — nine procedures run the journey (five for A1, four for A2). They are
+  **deterministic** by default — predictable, offline and auditable. Set
+  `CARD_DISPUTE_LLM=1` for a hybrid mode where the A2 agent, driven by its soul,
+  adds a plain-language rationale for the proposed step; it never changes state.
 
 ## Data & security
 

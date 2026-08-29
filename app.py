@@ -50,6 +50,12 @@ def metrics():
         c.close()
 
 
+@app.get("/api/agents")
+def agents():
+    # the two agents, their souls, and their skills — the no-code configuration
+    return service.AGENTS
+
+
 @app.get("/api/cases")
 def cases():
     c = db()

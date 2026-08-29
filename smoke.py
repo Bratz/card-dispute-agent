@@ -28,6 +28,13 @@ def main():
     cust = next(e for e in v["evidence"] if e["kind"] == "customer_statement")
     assert "4111" not in s.jd(cust["payload"]) and "token_" in s.jd(cust["payload"]), cust["payload"]
 
+    # ---- the rebuild: provenance calibration, duplicate detection, two agents / nine skills ----
+    conf = {e["kind"]: e["confidence"] for e in v["evidence"]}
+    assert conf["transaction_event"] == 1.0 and conf["customer_statement"] == 0.5 and conf["receipt"] == 0.6, conf
+    assert count(c, "SELECT COUNT(*) FROM evidence_item WHERE case_id=? AND status='duplicate'", (cid,)) == 1
+    assert len(s.AGENTS) == 2 and sum(len(a["skills"]) for a in s.AGENTS.values()) == 9
+    assert all(a["soul"] for a in s.AGENTS.values())
+
     # ---- the inject ----
     s.inject_late_evidence(c, cid)
     v = s.case_view(c, cid)
