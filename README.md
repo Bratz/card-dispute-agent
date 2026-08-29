@@ -132,6 +132,30 @@ the vision model also reads the slip and fills in missing fields (typed fields
 always win). Each new item re-runs the reconciliation, and A1's handoff to A2 is
 written to the audit trail.
 
+## Next Best Action — scored, with a demo ML model
+
+The next step is chosen by a transparent score:
+
+```
+score = P(success) × amount factor × deadline urgency × authority
+```
+
+- **Dependencies are a hard filter**, not a score: a representment is excluded —
+  and the blocker named in the audit — while required evidence is missing or a
+  contradiction is open.
+- **P(success) comes from a small logistic-regression model** (`ml.py`, pure
+  Python, no extra dependencies) with interaction features, trained at seed time.
+  **Honest label: the training data is synthetic**, generated to behave like
+  plausible dispute outcomes — the model demonstrates the pipeline
+  (features → training → calibrated probability → auditable score), not
+  intelligence learned from real cases. In production the same features retrain
+  on the bank's real won/lost outcomes, which the audit trail already records.
+- **Every proposal records its breakdown** — probability, urgency, authority,
+  amount factor, and what was blocked and why — so "why this action" is always
+  answerable. The UI shows the estimated chance of success on each proposal.
+- Under 48 hours to the representment window with no possible action, the case
+  is escalated to a person.
+
 ## No-code runtime (optional)
 
 The deterministic engine is the default. There is a second way to run the same

@@ -77,6 +77,24 @@ def main():
     aid4 = s.propose_action(c, cid, "request_evidence", {"summary": "no approval"}, "test-noapp")
     r = s.execute_action(c, aid4, mode="ok"); assert r.get("error") == "not approved — refused", r
 
+    # ---- NBA demo ML model: trained, sane, and on the record ----
+    import ml
+    info = ml.model_info(c)
+    assert info and info["train_accuracy"] > 0.6 and "synthetic" in info["trained_on"], info
+    f = {"b_submit_representment": 1.0, "has_required": 1.0, "contradiction_open": 0.0,
+         "merchant_conf": 0.9, "cardholder_conf": 0.1, "amount_norm": 0.5, "days_left_norm": 0.5}
+    p_good = ml.predict(c, f)
+    f2 = dict(f, contradiction_open=1.0, merchant_conf=0.3, cardholder_conf=0.7)
+    p_bad = ml.predict(c, f2)
+    assert 0.0 < p_bad < p_good < 1.0, (p_bad, p_good)   # learned the right direction
+    assert v["recommended"]["params"].get("p_success") is not None      # estimate on the proposal
+    scored = [a for a in v["audit"] if a["event"] == "action.scored"]
+    assert scored, "no score breakdown in the audit"
+    ref = s.jl(scored[-1]["ref"])
+    assert {"p_success", "score", "urgency", "authority", "blocked"} <= set(ref), ref
+    assert any(b["atype"] == "submit_representment" and "contradiction" in b["why"]
+               for b in ref["blocked"]), ref["blocked"]                 # dependency named
+
     # ---- role-based approval: money needs the Team Lead ----
     aid5 = s.propose_action(c, cid, "raise_chargeback", {"summary": "role test"}, "test-role")
     r = s.approve_action(c, aid5, user_key="user1")

@@ -130,7 +130,8 @@ function positions(hyps){const lead=hyps.reduce((a,b)=>b.confidence>a.confidence
   return hyps.map(h=>`<div class="pos ${h===lead?'lead':''}"><div class="r"><span class="s">${esc(h.statement)}</span><span class="pc">${h.confidence}%</span></div><div class="track"><div class="fill" data-w="${h.confidence}"></div></div></div>`).join("");}
 function recPanel(v){
   const a=v.recommended, last=v.last_action;
-  if(a && a.status==="proposed") return `<div class="rec"><div class="h">recommended action · proposed</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><button class="btn pri" data-approve="${a.action_id}">Approve</button></div><div class="gate">Requires approval before anything leaves the bank</div></div>`;
+  const mlNote=a&&a.params&&a.params.p_success!=null?`<div class="gate">Estimated chance of success ${Math.round(a.params.p_success*100)}% · needs ${esc((a.params.needs||"analyst").replace("_"," "))} · demo model, synthetic training data</div>`:"";
+  if(a && a.status==="proposed") return `<div class="rec"><div class="h">recommended action · proposed</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><button class="btn pri" data-approve="${a.action_id}">Approve</button></div>${mlNote}<div class="gate">Requires approval before anything leaves the bank</div></div>`;
   if(a && (a.status==="approved"||a.status==="executing")){
     const retry=a.status==="executing";
     return `<div class="rec"><div class="h">recommended action · ${retry?'awaiting reconciliation':'approved'}</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><select id="mode"><option value="ok">external: ok</option><option value="timeout">external: timeout</option><option value="fail">external: fail</option></select><button class="btn pri" data-exec="${a.action_id}">${retry?'Retry':'Execute'}</button></div><div class="gate">Runs once, on the record. Try timeout then retry to see it reconcile.</div></div>`;

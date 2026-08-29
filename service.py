@@ -518,28 +518,104 @@ def deadline_tracking(c, cid):
     due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=rule["window_days"])).date().isoformat()
     set_deadline(c, cid, "representment_window", due)
 
+def _days_left(c, cid):
+    d = one(c, "SELECT due_at FROM deadline WHERE case_id=? AND kind='representment_window' AND status='pending'", (cid,))
+    if not d:
+        return 30
+    try:
+        due = datetime.date.fromisoformat(d["due_at"][:10])
+        return max(0, (due - datetime.datetime.now(datetime.timezone.utc).date()).days)
+    except Exception:
+        return 30
+
+def _position_conf(c, cid):
+    """(merchant_conf, cardholder_conf) in 0..1 from the scored positions."""
+    mc = cc = 0.5
+    for h in rows(c, "SELECT stance, confidence FROM hypothesis WHERE case_id=?", (cid,)):
+        if h["stance"] == "merchant_favour":
+            mc = (h["confidence"] or 0) / 100.0
+        elif h["stance"] == "customer_favour":
+            cc = (h["confidence"] or 0) / 100.0
+    return mc, cc
+
 def next_best_action(c, cid):
+    """Rank the permitted candidates: score = P(success) x amount factor x urgency
+    x authority. P(success) comes from the demo ML model (trained on synthetic
+    outcomes); dependencies are a hard filter, and every proposal records its full
+    breakdown so 'why this action' is always answerable."""
+    import ml
     case = get_case(c, cid)
     rule = chargeback_rules(c, case["reason_code"])
     gaps = list_gaps(c, cid, open_only=True)
     contradiction = next((g for g in gaps if g["kind"] == "contradiction"), None)
     missing = next((g for g in gaps if g["kind"] == "missing"), None)
+    kinds = {e["kind"] for e in list_evidence(c, cid)}
+    has_required = all(k in kinds for k in rule["required"])
+    mc, cc = _position_conf(c, cid)
+    days = _days_left(c, cid)
+    urgency = 2.0 if days < 2 else 1.5 if days < 7 else 1.2 if days < 15 else 1.0
+    amount_factor = min((case["amount"] or 0) / 500.0, 1.0)
+    policy = get_policy(c)
+
+    base = {"has_required": 1.0 if has_required else 0.0,
+            "contradiction_open": 1.0 if contradiction else 0.0,
+            "merchant_conf": mc, "cardholder_conf": cc,
+            "amount_norm": amount_factor, "days_left_norm": min(days / 30.0, 1.0)}
+
+    candidates, blocked = [], []
+    def consider(atype, summary, purpose):
+        f = dict(base)
+        for a in ("request_evidence", "raise_chargeback", "submit_representment", "send_correspondence"):
+            f["b_" + a] = 1.0 if a == atype else 0.0
+        p = ml.predict(c, f)
+        authority = 0.9 if policy.get(atype, "team_lead") == "team_lead" else 1.0
+        score = p * max(amount_factor, 0.05) * urgency * authority
+        candidates.append({"atype": atype, "summary": summary, "purpose": purpose,
+                           "p_success": round(p, 3), "score": round(score, 4),
+                           "urgency": urgency, "authority": authority, "features": f})
+
     if contradiction:
-        return propose_action(c, cid, "request_evidence",
-                              {"summary": "Ask the cardholder to confirm the delivery address and who signed",
-                               "authority": "analyst", "expected_value": "resolve contradiction"},
-                              "cardholder-address")
+        consider("request_evidence", "Ask the cardholder to confirm the delivery address and who signed",
+                 "cardholder-address")
     if missing:
         req = jl(missing["about"]).get("required", "evidence")
-        return propose_action(c, cid, "request_evidence",
-                              {"summary": "Request %s from the merchant" % req.replace("_", " "),
-                               "authority": "analyst", "expected_value": "close the open exception"},
-                              "merchant-" + req)
+        consider("request_evidence", "Request %s from the merchant" % req.replace("_", " "), "merchant-" + req)
+    if "raise_chargeback" in rule["actions"]:
+        if has_required and cc >= 0.7:
+            consider("raise_chargeback", "Raise chargeback under reason %s" % case["reason_code"], "chargeback")
+        else:
+            blocked.append({"atype": "raise_chargeback",
+                            "why": "needs required evidence and a cardholder position of 70% or more"})
     if "submit_representment" in rule["actions"]:
-        return propose_action(c, cid, "submit_representment",
-                              {"summary": "Submit representment with compelling evidence", "authority": "team_lead"},
-                              "representment")
-    return None
+        if has_required and not contradiction and mc >= 0.7:
+            consider("submit_representment", "Submit representment with compelling evidence", "representment")
+        else:
+            why = ("an open contradiction" if contradiction else
+                   "required evidence missing" if not has_required else
+                   "a merchant position below 70%")
+            blocked.append({"atype": "submit_representment", "why": "blocked by " + why})
+
+    if not candidates:
+        if days < 2:
+            request_intervention(c, cid, "window closes in under 48 hours and no action is possible")
+        if blocked:
+            log_audit(c, cid, "next-best-action", "action.blocked",
+                      "; ".join("%s: %s" % (b["atype"], b["why"]) for b in blocked))
+        return None
+
+    best = max(candidates, key=lambda x: (x["score"], x["purpose"]))
+    breakdown = {k: best[k] for k in ("p_success", "score", "urgency", "authority")}
+    breakdown["amount_factor"] = round(amount_factor, 3)
+    breakdown["blocked"] = blocked
+    breakdown["model"] = "demo-1 (synthetic training data)"
+    aid = propose_action(c, cid, best["atype"],
+                         {"summary": best["summary"], "p_success": best["p_success"],
+                          "score": best["score"], "needs": policy.get(best["atype"], "team_lead")},
+                         best["purpose"])
+    log_audit(c, cid, "next-best-action", "action.scored",
+              "%s scored %.3f (P success %.0f%%)" % (best["atype"], best["score"], best["p_success"] * 100),
+              breakdown)
+    return aid
 
 def run_journey(c, cid):
     # A1 Evidence Reconciliation
@@ -603,6 +679,9 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
 
 # ---------------------------------------------------------------- seed + inject
 def seed(c):
+    import ml
+    acc = ml.train(c)          # demo NBA model, trained on synthetic outcomes
+    log.info(jd({"event": "nba_model.trained", "train_accuracy": acc, "data": "synthetic"}))
     cid = "DSP-100205"
     open_case(c, cid, customer_id="CUST-100205", card_id="tok_9f2a6b_4321", txn="TXN-88231",
               reason="13.1", amount=129.99, ccy="USD")
