@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+# pydantic is pulled in by fastapi.
+# Optional: enable an LLM narrative with CARD_DISPUTE_LLM=1
+# anthropic

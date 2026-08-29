@@ -1,0 +1,135 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disputes Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{--bg:#F6F7F8;--surface:#FFFFFF;--surface-2:#F0F2F4;--raise:#FAFBFC;--ink:#1A1D21;--muted:#5C636B;--faint:#98A0A8;
+    --line:#E2E5E8;--line-2:#EDEFF1;--accent:#20386A;--accent-2:#2C4C8C;--accent-soft:#EAEEF4;--alert:#A6373B;--ok:#2E6B4E;--warn:#8A6300;--r:6px;--rs:4px}
+  @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#14171B;--surface:#1B1F25;--surface-2:#242A31;--raise:#1F242A;--ink:#E6E9EC;--muted:#9AA2AA;--faint:#697079;--line:#2A2F36;--line-2:#23282E;--accent:#8FA9D8;--accent-2:#A9BEE4;--accent-soft:#1E2A40;--alert:#D98A8A;--ok:#6FBF95;--warn:#D6A94A}}
+  :root[data-theme=dark]{--bg:#14171B;--surface:#1B1F25;--surface-2:#242A31;--raise:#1F242A;--ink:#E6E9EC;--muted:#9AA2AA;--faint:#697079;--line:#2A2F36;--line-2:#23282E;--accent:#8FA9D8;--accent-2:#A9BEE4;--accent-soft:#1E2A40;--alert:#D98A8A;--ok:#6FBF95;--warn:#D6A94A}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:13.5px;line-height:1.5}
+  .mono{font-family:"IBM Plex Mono",monospace}button{font-family:inherit;cursor:pointer}button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .bar{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--line);padding:9px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .bar b{font-weight:600}.bar .m{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint)}.sp{flex:1}
+  .btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:var(--rs);padding:6px 12px;font-size:13px;font-weight:500}
+  .btn:hover{border-color:var(--accent)}.btn.pri{background:var(--accent);border-color:transparent;color:#fff}.btn.sm{padding:4px 9px;font-size:12px}
+  :root[data-theme=dark] .btn.pri,:root:not([data-theme=light]) .btn.pri{color:#14171B}
+  @media(prefers-color-scheme:dark){:root:not([data-theme=light]) .btn.pri{color:#14171B}}
+  select{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:var(--rs);background:var(--surface);color:var(--ink);padding:5px 7px}
+  .wrap{max-width:1080px;margin:0 auto;padding:16px 20px 44px}
+  h1{font-size:17px;font-weight:600;margin:0 0 3px}.sub{color:var(--muted);font-size:12.5px;margin:0 0 14px}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:12px;transition:border-color .8s}
+  .panel>header{display:flex;gap:8px;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line-2);background:var(--raise)}
+  .panel>header h2{margin:0;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+  .panel>header .x{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint)}
+  .panel .body{padding:12px 13px}.panel.flash{animation:fl 1s ease}@keyframes fl{0%{border-color:var(--accent)}100%{border-color:var(--line)}}
+  table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:8px 12px;border-bottom:1px solid var(--line)}
+  td{padding:8px 12px;border-bottom:1px solid var(--line-2)}tr:last-child td{border-bottom:0}tr.row{cursor:pointer}tr.row:hover td{background:var(--surface-2)}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .badge{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted)}
+  .badge.hi{color:var(--alert);border-color:var(--alert)}
+  .two{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;align-items:start}@media(max-width:820px){.two{grid-template-columns:1fr}}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font-size:13px}.kv dt{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;align-self:center}.kv dd{margin:0}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;padding:2px 7px;border-radius:var(--rs);background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
+  .chip.tok{background:transparent;border-style:dashed}.chip.new{background:transparent;border-color:var(--alert);color:var(--alert)}
+  .item{border:1px solid var(--line);border-radius:var(--rs);padding:8px 11px;margin-bottom:8px}.item:last-child{margin-bottom:0}
+  .item .t{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:3px}.item .k{font-weight:600;font-size:12.5px}.item .w{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}.item .p{font-size:12px;color:var(--muted)}
+  .tl{position:relative;padding-left:15px}.tl::before{content:"";position:absolute;left:3px;top:5px;bottom:5px;width:1px;background:var(--line)}
+  .tl .e{position:relative;padding:5px 0 5px 6px;font-size:13px}.tl .e::before{content:"";position:absolute;left:-15px;top:9px;width:7px;height:7px;border-radius:50%;background:var(--surface);border:1.5px solid var(--accent)}.tl .e .d{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}
+  .pos{margin-bottom:9px}.pos .r{display:flex;gap:8px;align-items:center}.pos .s{flex:1;font-size:13px}.pos .pc{font-family:"IBM Plex Mono",monospace;font-size:12px;width:34px;text-align:right}
+  .track{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-top:4px}.fill{height:100%;background:var(--accent-2);border-radius:3px;width:0;transition:width .9s cubic-bezier(.2,.7,.2,1)}.pos.lead .fill{background:var(--accent)}
+  .exc{display:flex;gap:8px;font-size:12.5px;padding:7px 10px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:var(--rs);margin-bottom:7px}.exc:last-child{margin-bottom:0}
+  .exc.contradiction{border-left-color:var(--alert)}.exc.contradiction .tag{color:var(--alert)}.exc.missing{border-left-color:var(--warn)}.exc.missing .tag{color:var(--warn)}.exc.resolved{opacity:.5;text-decoration:line-through}
+  .exc .tag{font-family:"IBM Plex Mono",monospace;font-size:10px;text-transform:uppercase;color:var(--faint)}
+  .rec{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--rs);padding:11px 12px}.rec .h{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin-bottom:4px}.rec .w{font-size:13.5px;margin-bottom:10px}.rec .btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.gate{font-size:11px;color:var(--faint);margin-top:9px}.gate .ok{color:var(--ok);font-weight:600}
+  .liab .v{font-size:18px;font-weight:600;color:var(--muted)}.liab.set .v{color:var(--ink)}.liab .n{font-size:11px;color:var(--muted);margin-top:5px}.decbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .aud{max-height:240px;overflow:auto}.aud .a{display:grid;grid-template-columns:auto 1fr auto;gap:8px;font-size:12px;padding:6px 2px;border-bottom:1px solid var(--line-2)}.aud .a:last-child{border-bottom:0}
+  .aud .ac{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--accent)}.aud .r{color:var(--muted);display:block;font-size:11px}.aud .tm{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--faint)}
+  .actionbar{position:sticky;bottom:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  .note{font-size:12.5px;color:var(--muted);flex:1;min-width:200px}
+  .banner{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--rs);padding:11px 13px;font-size:13px;color:var(--muted);margin-bottom:12px;display:none}.banner.show{display:block}.banner b{color:var(--ink)}
+  .toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:20}.toast{background:var(--surface);border:1px solid var(--line);font-size:12.5px;padding:9px 13px;border-radius:var(--rs);max-width:320px}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<div class="bar"><b>Disputes Console</b><span class="m" id="meta"></span><span class="sp"></span>
+  <button class="btn sm" id="reset">Reset demo</button>
+  <button class="btn sm" id="tg">Theme</button></div>
+<div class="wrap">
+  <div class="panel"><header><h2>Case Queue</h2><span class="x" id="qn"></span></header>
+    <div class="body" style="padding:0"><table id="queue"></table></div></div>
+  <div id="workspace"></div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const money=(a,c)=>a==null?"":a.toFixed(2)+" "+(c||"");
+async function get(u){return (await fetch(u)).json();}
+async function post(u){return (await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"}})).json();}
+async function postBody(u,b){return (await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})).json();}
+function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;$("toasts").appendChild(t);setTimeout(()=>{t.style.opacity=0;t.style.transition="opacity .3s";setTimeout(()=>t.remove(),300)},2800);}
+// theme
+(function(){try{const s=localStorage.getItem("dc2");if(s)document.documentElement.setAttribute("data-theme",s)}catch(e){}
+ const cur=()=>document.documentElement.getAttribute("data-theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+ $("tg").onclick=()=>{const n=cur()==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",n);try{localStorage.setItem("dc2",n)}catch(e){}};})();
+
+let current=null;
+async function loadQueue(){
+  const [cases,m]=await Promise.all([get("/api/cases"),get("/metrics")]);
+  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.actions_compensated} compensated · ${m.audit_entries} audit`;
+  $("qn").textContent=cases.length+" cases";
+  $("queue").innerHTML="<thead><tr><th>Dispute</th><th>Cardholder</th><th>Amount</th><th>Reason</th><th>Stage</th><th>Recommended</th></tr></thead><tbody>"+
+    cases.map(c=>`<tr class="row" data-id="${c.case_id}"><td class="mono">${c.case_id}</td><td>${esc(c.customer_id)}</td><td class="num">${money(c.amount,c.currency)}</td><td>${c.reason} · ${esc(c.reason_text)}</td><td><span class="badge ${c.stage==='resolved'?'':''}">${esc(c.stage)}</span>${c.conflict?' <span class="badge hi">conflict</span>':''}</td><td style="color:var(--muted)">${esc(c.recommended||"")}</td></tr>`).join("")+"</tbody>";
+  $("queue").querySelectorAll("tr.row").forEach(r=>r.onclick=()=>loadCase(r.dataset.id));
+}
+function positions(hyps){const lead=hyps.reduce((a,b)=>b.confidence>a.confidence?b:a,hyps[0]||{});
+  return hyps.map(h=>`<div class="pos ${h===lead?'lead':''}"><div class="r"><span class="s">${esc(h.statement)}</span><span class="pc">${h.confidence}%</span></div><div class="track"><div class="fill" data-w="${h.confidence}"></div></div></div>`).join("");}
+function recPanel(v){
+  const a=v.recommended, last=v.last_action;
+  if(a && a.status==="proposed") return `<div class="rec"><div class="h">recommended action · proposed</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><button class="btn pri" data-approve="${a.action_id}">Approve</button></div><div class="gate">Requires approval before anything leaves the bank</div></div>`;
+  if(a && (a.status==="approved"||a.status==="executing")){
+    const retry=a.status==="executing";
+    return `<div class="rec"><div class="h">recommended action · ${retry?'awaiting reconciliation':'approved'}</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><select id="mode"><option value="ok">external: ok</option><option value="timeout">external: timeout</option><option value="fail">external: fail</option></select><button class="btn pri" data-exec="${a.action_id}">${retry?'Retry':'Execute'}</button></div><div class="gate">Runs once, on the record. Try timeout then retry to see it reconcile.</div></div>`;
+  }
+  if(last && (last.status==="done"||last.status==="compensated")) return `<div class="rec"><div class="h">last action</div><div class="w">${esc(last.params.summary)}</div><div class="gate"><span class="ok">${last.status}</span>${last.external_ref?' · '+esc(last.external_ref):''}</div></div>`;
+  return `<div class="rec"><div class="h">recommended action</div><div class="w" style="color:var(--muted)">none pending</div></div>`;
+}
+async function loadCase(id){
+  const v=await get("/api/cases/"+id); current=id; render(v);
+  window.scrollTo({top:document.getElementById("workspace").offsetTop-60,behavior:"smooth"});
+}
+function render(v){
+  const c=v.case, ev=v.evidence.map(e=>`<div class="item"><div class="t"><span class="k">${esc(e.kind)}</span><span class="chip">${esc(e.assertion_type)}</span><span class="chip">${esc(e.source_authority||'')}</span>${e.kind==='delivery_record'?'<span class="chip new">late · new</span>':''}<span class="w">${esc((e.effective_at||'').slice(0,10))}</span></div><div class="p mono">${esc(JSON.stringify(e.payload))}</div></div>`).join("");
+  const tl=v.timeline.map(t=>`<div class="e"><div class="d">${esc((t.occurred_at||'').replace('T',' ').slice(0,16))}</div>${esc(t.description)}</div>`).join("")||'<div style="color:var(--muted)">no events yet</div>';
+  const gaps=v.gaps.map(g=>{const ab=JSON.parse(g.about||"{}");return `<div class="exc ${g.kind} ${g.status==='resolved'?'resolved':''}"><span class="tag">${g.kind}</span><span>${esc(ab.text|| (g.kind==='contradiction'?'cardholder vs delivery record':'delivery evidence'))}</span></div>`;}).join("")||'<div style="color:var(--muted);font-size:12.5px">No open exceptions.</div>';
+  const aud=v.audit.map(a=>`<div class="a"><span class="ac">${esc(a.actor)}</span><span>${esc(a.event)}<span class="r">${esc(a.reason||'')}</span></span><span class="tm">${esc((a.at||'').slice(11,19))}</span></div>`).join("");
+  const liab=v.liability?`<div class="liab set"><div class="v">${esc(v.liability)}</div><div class="n">Recorded by an analyst · case closed</div></div>`
+    :`<div class="liab"><div class="v">Not decided</div><div class="n">Liability is recorded by an analyst, not by the system.</div><div class="decbtns"><button class="btn sm" data-dec="Cardholder favour">Cardholder favour</button><button class="btn sm" data-dec="Merchant favour">Merchant favour</button><button class="btn sm" data-dec="No recovery">No recovery</button></div></div>`;
+  $("workspace").innerHTML=`<h1>${c.case_id} — ${esc(c.customer_id)}</h1><p class="sub">${c.reason_code} · ${money(c.amount,c.currency)} · ${esc(c.stage)}</p>
+    <div class="banner" id="banner"></div>
+    <div class="two"><div>
+      <div class="panel" id="p-case"><header><h2>Case</h2></header><div class="body"><div class="kv"><dt>Cardholder</dt><dd class="mono">${esc(c.customer_id)}</dd><dt>Card</dt><dd><span class="chip tok">${esc(c.card_id)}</span></dd><dt>Amount</dt><dd>${money(c.amount,c.currency)}</dd><dt>Reason</dt><dd>${c.reason_code}</dd></div></div></div>
+      <div class="panel" id="p-tl"><header><h2>Event timeline</h2><span class="x">v${v.timeline_version}${v.timeline_version>1?' · previous kept':''}</span></header><div class="body"><div class="tl">${tl}</div></div></div>
+      <div class="panel" id="p-ev"><header><h2>Evidence</h2><span class="x">${v.evidence.length} items</span></header><div class="body">${ev}</div></div>
+    </div><div>
+      <div class="panel" id="p-pos"><header><h2>Case assessment</h2><span class="x">both kept</span></header><div class="body">${positions(v.hypotheses)}</div></div>
+      <div class="panel" id="p-exc"><header><h2>Exceptions</h2></header><div class="body">${gaps}</div></div>
+      <div class="panel" id="p-rec"><header><h2>Next best action</h2></header><div class="body">${recPanel(v)}</div></div>
+      <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
+      <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
+    </div></div>
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><span class="note">Records a late, signed delivery record that contradicts the cardholder; the case reassesses itself.</span></div>`;
+  document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
+  const inj=$("inject"); if(inj) inj.onclick=doInject;
+  document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
+  document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
+  document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));
+}
+async function doInject(){const v=await post(`/api/cases/${current}/inject`);render(v);["p-ev","p-tl","p-exc","p-pos","p-rec","p-aud"].forEach(id=>{const p=$(id);if(p){p.classList.remove("flash");void p.offsetWidth;p.classList.add("flash");}});const b=$("banner");if(b){b.innerHTML='<b>The late evidence updated the case.</b> The stronger position moved to the merchant, both positions stayed on file, every earlier version was kept, and liability is still an analyst decision.';b.classList.add("show");}toast("Merchant evidence recorded — case updated.");loadQueue();}
+async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.note||"Approved.");loadCase(current);}
+async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await post(`/api/actions/${aid}/execute?mode=${mode}`);
+  toast(r.error?("Refused: "+r.error):(r.reconciled?"Reconciled — no second effect.":r.note?("Executing: "+r.note):("Action "+r.status+".")));loadCase(current);loadQueue();}
+async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});render(v);toast("Liability recorded — case closed.");loadQueue();}
+$("reset").onclick=async()=>{await post("/api/reset");current=null;$("workspace").innerHTML="";toast("Demo reset.");loadQueue();};
+loadQueue();
+</script></body></html>
