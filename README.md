@@ -1,5 +1,7 @@
 # Card Dispute Evidence Agent
 
+[![ci](https://github.com/Bratz/card-dispute-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Bratz/card-dispute-agent/actions/workflows/ci.yml)
+
 An evidence-reconciliation case manager for card payment disputes. It reconstructs
 the disputed event from scattered evidence, keeps every version, holds competing
 positions open, recommends the next permitted step — and leaves the liability
