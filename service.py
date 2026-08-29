@@ -144,6 +144,13 @@ def upsert_evidence(c, cid, kind, assertion_type, payload, source=None, effectiv
         return existing["evidence_id"]          # idempotent ingest
     eid = uid()
     src = source or {}
+    # a correction: the same real-world object (same tracking number) with new
+    # content supersedes the earlier version — which is kept, never deleted.
+    if not supersedes and payload.get("tracking"):
+        prior = one(c, "SELECT evidence_id FROM evidence_item WHERE case_id=? AND kind=? AND status='active' AND payload LIKE ?",
+                    (cid, kind, "%" + jd({"tracking": payload["tracking"]})[1:-1] + "%"))
+        if prior:
+            supersedes = prior["evidence_id"]
     if supersedes:
         c.execute("UPDATE evidence_item SET status='superseded' WHERE evidence_id=?", (supersedes,))
     c.execute("""INSERT INTO evidence_item(evidence_id,case_id,kind,assertion_type,payload,source_system,
@@ -151,7 +158,10 @@ def upsert_evidence(c, cid, kind, assertion_type, payload, source=None, effectiv
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?, 'active')""",
               (eid, cid, kind, assertion_type, jd(payload), src.get("system"), src.get("authority"),
                src.get("supplied_by"), effective_at, now(), h, src.get("confidence", 1.0), supersedes))
-    log_audit(c, cid, "assemble-evidence", "evidence.upsert", kind, {"evidence_id": eid})
+    log_audit(c, cid, "assemble-evidence",
+              "evidence.corrected" if supersedes else "evidence.upsert",
+              kind + (" — supersedes an earlier version, which is kept" if supersedes else ""),
+              {"evidence_id": eid, "supersedes": supersedes})
     return eid
 
 def rebuild_timeline(c, cid):
@@ -499,6 +509,20 @@ def conflict_detection(c, cid):
             for g in list_gaps(c, cid, open_only=True):
                 if g["kind"] == "missing" and jl(g["about"]).get("required") == req:
                     resolve_gap(c, g["gap_id"])
+    # stale: an active item far older than the newest evidence on the case
+    act = list_evidence(c, cid)
+    eff = [(e["effective_at"] or e["received_at"]) for e in act]
+    if eff:
+        newest = max(eff)[:10]
+        for e in act:
+            t = (e["effective_at"] or e["received_at"])[:10]
+            try:
+                age = (datetime.date.fromisoformat(newest) - datetime.date.fromisoformat(t)).days
+            except ValueError:
+                continue
+            if age > 30:
+                open_gap(c, cid, "stale", "%s is %d days older than the newest evidence" % (e["kind"], age),
+                         {"evidence_id": e["evidence_id"]})
     # contradiction: delivery says delivered, customer says not received
     ev = {e["kind"]: jl(e["payload"]) for e in list_evidence(c, cid)}
     if "delivery_record" in ev and "customer_statement" in ev:
@@ -686,6 +710,23 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
     if material:
         flag_reeval(c, cid, "timeline", "new evidence: %s" % kind)
     return eid
+
+def raise_dispute(c, f, user_key):
+    """Journey step 1, live: a person raises a new dispute; the journey starts."""
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
+    for k in ("customer_id", "card_token", "txn_id", "amount", "reason_code"):
+        if not f.get(k):
+            return {"error": "missing field: " + k}
+    n = one(c, "SELECT MAX(CAST(SUBSTR(case_id,5) AS INTEGER)) m FROM dispute_case WHERE case_id LIKE 'DSP-%'")
+    cid = "DSP-%06d" % ((n["m"] or 100000) + 1)
+    open_case(c, cid, customer_id=f["customer_id"], card_id=f["card_token"], txn=f["txn_id"],
+              reason=f["reason_code"], amount=float(f["amount"]), ccy=f.get("currency", "USD"))
+    log_audit(c, cid, user["name"], "case.raised_by", "raised in the console")
+    run_journey(c, cid)
+    c.commit()
+    return {"case_id": cid}
 
 # ---------------------------------------------------------------- A0 Intake Triage
 def _ensure_intake(c):
@@ -880,6 +921,10 @@ def seed(c):
                       {"store": "ACME Store", "order_status": "shipped", "ship_to": "on file"},
                       {"system": "merchant_portal", "authority": "second_party", "supplied_by": "merchant"},
                       "2026-07-21T08:00:00+00:00")
+    assemble_evidence(c, cid, "merchant_record", "recorded_fact",   # months old -> flagged stale
+                      {"store": "ACME Store", "order_status": "processing", "note": "early status snapshot"},
+                      {"system": "merchant_portal", "authority": "second_party", "supplied_by": "merchant"},
+                      "2026-05-15T08:00:00+00:00")
     assemble_evidence(c, cid, "correspondence", "user_input",
                       {"channel": "email", "text": "Customer emailed asking where the order is."},
                       {"system": "dispute_portal", "authority": "first_party", "supplied_by": "customer"},

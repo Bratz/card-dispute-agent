@@ -227,6 +227,18 @@ def decision(cid: str, outcome: str = Body(..., embed=True), x_user: str = Heade
         c.close()
 
 
+@app.post("/api/cases")
+def raise_case(payload: dict = Body(...), x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.raise_dispute(c, payload, x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+        return r
+    finally:
+        c.close()
+
+
 @app.post("/api/ingest")
 def ingest(payload: dict = Body(...)):
     """Evidence arriving cold, with no case reference — the connector path.

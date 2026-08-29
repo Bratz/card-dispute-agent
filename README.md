@@ -162,6 +162,12 @@ the vision model also reads the slip and fills in missing fields (typed fields
 always win). Each new item re-runs the reconciliation, and A1's handoff to A2 is
 written to the audit trail.
 
+Three more things the case handles by itself: a **corrected item** (the same
+tracking number with new content) **supersedes** the earlier version — which is
+kept, never deleted — and the case reassesses; evidence far **older** than the
+newest item on the case is flagged **stale**; and a new dispute can be **raised
+from the console** ("Raise dispute"), which starts the journey from step one.
+
 ## Next Best Action — scored, with a demo ML model
 
 The next step is chosen by a transparent score:
@@ -220,6 +226,9 @@ evidence on the wrong dispute. Anything refused goes to the human queue.
   required.
 - Card numbers are **redacted on intake** (token + last four; CVV/PIN dropped),
   so nothing that could rebuild a card is stored.
+- Identity in the demo is a **profile switch with server-side role enforcement**
+  — a stand-in for real authentication, which is out of scope for a synthetic
+  demo. The role checks, approver names and audit trail are real.
 
 ## What is not built yet
 

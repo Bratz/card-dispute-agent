@@ -54,11 +54,20 @@
 <div class="bar"><b>Disputes Console</b><span class="m" id="meta"></span><span class="sp"></span>
   <label style="font-size:12px;color:var(--muted)">Signed in as</label>
   <select id="who"></select>
+  <button class="btn sm" id="raisebtn">Raise dispute</button>
   <button class="btn sm" id="rulesbtn">Rules</button>
   <button class="btn sm" id="reset">Reset demo</button>
   <button class="btn sm" id="tg">Theme</button></div>
 <div class="wrap">
   <div id="rulespanel" style="display:none"></div>
+  <div id="raisepanel" style="display:none"><div class="panel"><header><h2>Raise a dispute</h2></header><div class="body">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:720px">
+      <input id="rd-cust" placeholder="Cardholder id"><input id="rd-card" placeholder="Card token">
+      <input id="rd-txn" placeholder="Transaction id"><input id="rd-amt" placeholder="Amount">
+      <select id="rd-rc"><option value="13.1">13.1 — Services not received</option><option value="13.3">13.3 — Not as described</option>
+        <option value="10.4">10.4 — Fraud, card absent</option><option value="12.6">12.6 — Duplicate processing</option></select>
+      <button class="btn pri" id="rd-go">Raise</button>
+    </div></div></div></div>
   <div id="intakepanel"></div>
   <div class="panel"><header><h2>Case Queue</h2><span class="x" id="qn"></span></header>
     <div class="body" style="padding:0"><table id="queue"></table></div></div>
@@ -212,12 +221,19 @@ function render(v){
       <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
       <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
     </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
     <div id="transcript"></div>`;
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
   const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
   const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
+  const cr=$("correctbtn"); if(cr) cr.onclick=async()=>{
+    const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
+      fields:{carrier:"FastShip",tracking:"FS-99001",status:"delivered",signed_by:"J. Doe (neighbour)",
+              order_id:"ORD-5567",delivered_at:"2026-07-22T09:41:00Z",
+              note:"Correction: the parcel was signed for by the neighbour"}});
+    toast(r.status==="attached"?"Correction recorded — earlier version kept, case reassessed.":("Held for a person — "+r.reason));
+    loadQueue();if(current)loadCase(current);};
   const cb=$("coldbtn"); if(cb) cb.onclick=async()=>{
     const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
       fields:{note:"Refund receipt copy", card_token:"tok_9f2a6b_4321", amount:129.99, channel:"portal", text:"see attached"}});
@@ -259,6 +275,12 @@ async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await 
 async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});if(v.error){toast(v.error);return;}render(v);toast("Liability recorded by "+(v.decided_by||me())+" — case closed.");loadQueue();}
 $("reset").onclick=async()=>{await post("/api/reset");current=null;$("workspace").innerHTML="";toast("Demo reset.");loadQueue();};
 $("rulesbtn").onclick=toggleRules;
+$("raisebtn").onclick=()=>{const p=$("raisepanel");p.style.display=p.style.display==="none"?"block":"none";};
+$("rd-go").onclick=async()=>{
+  const r=await postBody("/api/cases",{customer_id:$("rd-cust").value,card_token:$("rd-card").value,
+    txn_id:$("rd-txn").value,amount:$("rd-amt").value,reason_code:$("rd-rc").value});
+  if(r.error){toast(r.error);return;}
+  $("raisepanel").style.display="none";toast("Dispute "+r.case_id+" raised.");loadQueue();loadCase(r.case_id);};
 loadUsers();
 loadQueue();
 </script></body></html>

@@ -24,6 +24,7 @@ def main():
     delivered = "The merchant delivered and the customer received the goods"
     assert hyps[not_del] > hyps[delivered], hyps       # cardholder leads before the merchant evidence
     assert any(g["kind"] == "missing" and g["status"] == "open" for g in v["gaps"])
+    assert any(g["kind"] == "stale" and g["status"] == "open" for g in v["gaps"])   # old snapshot flagged
     assert v["recommended"] and "merchant" in v["recommended"]["params"]["summary"].lower()
 
     # ---- redaction actually happened ----
@@ -80,6 +81,32 @@ def main():
     aid4 = s.propose_action(c, cid, "request_evidence", {"summary": "no approval"}, "test-noapp")
     r = s.execute_action(c, aid4, mode="ok"); assert r.get("error") == "not approved — refused", r
 
+    # ---- a CORRECTION: same tracking number, new content -> supersedes, keeps the old ----
+    r = s.triage_intake(c, {"carrier": "FastShip", "tracking": "FS-99001", "status": "delivered",
+                            "signed_by": "J. Doe (neighbour)", "order_id": "ORD-5567",
+                            "delivered_at": "2026-07-22T09:41:00Z", "note": "correction"},
+                        supplied_by="merchant")
+    assert r["status"] == "attached", r
+    dl = rows_by = c.execute("SELECT status, payload FROM evidence_item WHERE case_id=? AND kind='delivery_record'", (cid,)).fetchall()
+    st = sorted(x[0] for x in dl)
+    assert st == ["active", "superseded"], st                       # earlier version kept
+    active_dl = [x for x in dl if x[0] == "active"][0]
+    assert "neighbour" in active_dl[1]
+    assert s.timeline_version(c, cid) >= 3                          # rebuilt again
+    v = s.case_view(c, cid)
+    assert any(a["event"] == "evidence.corrected" for a in v["audit"])
+
+    # ---- journey step 1, live: raise a new dispute ----
+    assert s.raise_dispute(c, {"customer_id": "x"}, "nobody").get("error")
+    r = s.raise_dispute(c, {"customer_id": "CUST-900", "card_token": "tok_z9", "txn_id": "TXN-Z9",
+                            "amount": 50, "reason_code": "13.3"}, "user1")
+    cid2 = r["case_id"]
+    assert s.get_case(c, cid2) and cid2.startswith("DSP-")
+    v2 = s.case_view(c, cid2)
+    assert any(g["kind"] == "missing" for g in v2["gaps"])          # 13.3 requires correspondence
+    assert v2["recommended"] and "correspondence" in v2["recommended"]["params"]["summary"]
+    assert any(a["event"] == "case.raised_by" and a["actor"] == "User 1" for a in v2["audit"])
+
     # ---- A0 triage: weak match waits for a person; assignment and rejection work ----
     r = s.triage_intake(c, {"note": "refund copy", "card_token": "tok_9f2a6b_4321", "amount": 129.99})
     assert r["status"] == "pending" and r["suggested_case"] == cid, r     # weak -> never auto-attach
@@ -116,7 +143,9 @@ def main():
     f2 = dict(f, contradiction_open=1.0, merchant_conf=0.3, cardholder_conf=0.7)
     p_bad = ml.predict(c, f2)
     assert 0.0 < p_bad < p_good < 1.0, (p_bad, p_good)   # learned the right direction
-    assert v["recommended"]["params"].get("p_success") is not None      # estimate on the proposal
+    ca = s.one(c, "SELECT params FROM case_action WHERE idempotency_key=?",
+               (cid + ":request_evidence:cardholder-address",))
+    assert s.jl(ca["params"]).get("p_success") is not None              # estimate on the scored proposal
     scored = [a for a in v["audit"] if a["event"] == "action.scored"]
     assert scored, "no score breakdown in the audit"
     ref = s.jl(scored[-1]["ref"])
