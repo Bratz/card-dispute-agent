@@ -77,9 +77,24 @@ python smoke.py
 
 Three layers, and one process serves the API and the UI.
 
+```mermaid
+flowchart LR
+  UI["Operator UI<br/>static/index.html"] -->|HTTP · JSON| API
+
+  subgraph proc["Single process — app.py"]
+    API["FastAPI<br/>/api · /health · /metrics"]
+    SK["Skills<br/>deterministic journey"]
+    TL["Tools<br/>read · derive · action · control"]
+    API --> SK --> TL
+  end
+
+  TL --> DB[("SQLite<br/>11-table evidence model<br/>versioned · provenance · append-only audit")]
+  TL -. execute_action only .-> EXT[["Mock external world<br/>ledger — reconcile on retry"]]
+  ANA(["Analyst"]) -. approve · decide liability .-> API
 ```
-UI (static/index.html)  →  API (app.py, FastAPI)  →  skills + tools (service.py)  →  SQLite (schema.sql)
-```
+
+Only `execute_action` reaches the external world; every external effect is
+idempotent and approval-gated, and the analyst owns the liability decision.
 
 - **State store** — 11 tables: a versioned, provenance-tagged evidence model with
   an append-only audit and idempotency keys. See `docs/DESIGN.md` for the full
