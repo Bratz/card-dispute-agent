@@ -59,6 +59,7 @@ SCENARIOS = [("A0 attaches on a strong key", a0_strong_key),
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     print("eval: %d runs per scenario, models=%s" % (n, ",".join(agent._models())))
+    totals = {"llm_runs": 0, "llm_tokens_in": 0, "llm_tokens_out": 0, "llm_fallbacks": 0}
     for name, fn in SCENARIOS:
         ok = 0
         for i in range(n):
@@ -68,8 +69,9 @@ if __name__ == "__main__":
                     ok += 1
             except Exception as e:
                 print("  run error:", e)
+            m = S.llm_metrics(c)          # this run's DB, before the next reset wipes it
+            for k in totals:
+                totals[k] += m.get(k, 0)
             c.close()
         print("%-38s %d/%d" % (name, ok, n))
-    c = S.connect()
-    print("token usage this eval:", S.llm_metrics(c))
-    c.close()
+    print("token usage this eval:", totals)
