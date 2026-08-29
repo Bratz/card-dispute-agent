@@ -14,6 +14,14 @@ expectations, word for word in short form.
   audit says `evidence.corrected`.
 - **Late arrival handled cold** — evidence with no case reference is matched to
   its case by the A0 Intake Triage agent; the finale scenario runs this way.
+- **Two-lane evidence acquisition** — the system decides what the case needs and
+  goes and gets it. Lane 1: the bank's own systems of record are **pulled
+  read-only, automatically**, by keys the case already holds (raise a dispute
+  and watch the switch records arrive by themselves, audited as
+  `evidence.pulled`). Lane 2: external parties are reached only through a
+  proposed request behind the approval gate. You can only pull what you can
+  address — which is why the merchant's delivery proof still has to be asked
+  for, and can still arrive late.
 - **Conflicting versions surfaced, not merged** — a delivery record that
   contradicts the cardholder opens a contradiction exception; nobody quietly
   picks a side.

@@ -153,7 +153,8 @@ function Reports() {
 
 function Admin({ tick }) {
   const [rules, setRules] = useState(null);
-  useEffect(() => { jget("/api/rules").then(setRules); }, [tick]);
+  const [agents, setAgents] = useState(null);
+  useEffect(() => { jget("/api/rules").then(setRules); jget("/api/agents").then(setAgents); }, [tick]);
   if (!rules) return html`<div><h1>Administration</h1></div>`;
   const setReason = (code, f, v) => setRules({ ...rules, reasons: { ...rules.reasons, [code]: { ...rules.reasons[code], [f]: v } } });
   const save = async () => {
@@ -168,6 +169,14 @@ function Admin({ tick }) {
   };
   return html`<div><h1>Administration</h1>
     <p class="sub">The operating rules are configuration, not code. Only the Team Lead can save.</p>
+    ${agents && html`<${Panel} pad=${false} title="Agents" x="soul + skills — the no-code configuration">
+      <table><thead><tr><th>Agent</th><th>Role (soul, opening line)</th><th>Skills</th></tr></thead>
+      <tbody>${Object.entries(agents).map(([k, a]) => html`<tr key=${k}>
+        <td><span class="mono">${k}</span> ${a.name}</td>
+        <td style=${{ color: "var(--muted)", fontSize: "12.5px" }}>${short(a.soul, 150)}</td>
+        <td>${a.skills.length} — <span class="mono" style=${{ fontSize: "11px" }}>${a.skills.join(", ")}</span></td></tr>`)}
+      <tr><td>Advocate pair</td><td style=${{ color: "var(--muted)", fontSize: "12.5px" }}>Two opposite souls argue both sides of a conflict from the evidence on file. They argue; a person decides.</td><td>on demand</td></tr>
+      </tbody></table><//>`}
     <${Panel} pad=${false} title="Reason-code rules">
       <table><thead><tr><th>Code</th><th>Meaning</th><th>Window (days)</th><th>Required evidence</th><th>Permitted actions</th></tr></thead>
       <tbody>${Object.entries(rules.reasons).map(([code, x]) => html`<tr key=${code}>
@@ -182,6 +191,15 @@ function Admin({ tick }) {
         <td><select value=${role} onChange=${e => setRules({ ...rules, policy: { ...rules.policy, [act]: e.target.value } })}>
           <option value="analyst">Analyst</option><option value="team_lead">Team Lead</option></select></td></tr>`)}</tbody></table><//>
     <button class="btn pri" onClick=${save}>Save rules</button>
+    <div style=${{ height: "12px" }}></div>
+    <${Panel} pad=${false} title="Data handling" x="enforced in code, not toggles">
+      <table><thead><tr><th>Data</th><th>How it is handled</th></tr></thead><tbody>
+        <tr><td>Card number</td><td>Stored as a token plus last four only — replaced at every intake door before anything is written.</td></tr>
+        <tr><td>CVV / PIN / track data</td><td>Never stored; dropped on intake, even inside free text.</td></tr>
+        <tr><td>Text redaction</td><td>Card numbers in any text field are found (pattern + Luhn check) and masked.</td></tr>
+        <tr><td>Evidence acquisition</td><td>Bank systems of record are pulled read-only by keys the case holds; external parties are reached only through an approved request.</td></tr>
+        <tr><td>Retention</td><td>Case history is kept — corrections supersede, nothing is deleted; sensitive fields are tokenised, not erased.</td></tr>
+      </tbody></table><//>
   </div>`;
 }
 

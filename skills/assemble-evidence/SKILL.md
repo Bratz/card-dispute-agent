@@ -10,7 +10,7 @@ metadata:
   writes: [upsert_evidence, flag_reeval, log_audit]
   writes_external: false
   needs_approval: false
-allowed-tools: get_case, list_evidence, upsert_evidence, flag_reeval, log_audit
+allowed-tools: get_case, list_evidence, upsert_evidence, pull_from_systems, flag_reeval, log_audit
 ---
 
 # Assemble evidence
@@ -21,6 +21,10 @@ customer statement, merchant record, transaction event, receipt, delivery
 record, authentication event, or correspondence.
 
 ## Procedure
+0. **Pull before you wait.** Call `pull_from_systems` — evidence the bank's own
+   systems of record can answer for (by a key the case already holds) is fetched
+   read-only, not requested. Only external parties need a proposed request and a
+   person's approval.
 1. **Classify the kind.** One of: `customer_statement`, `merchant_record`,
    `transaction_event`, `receipt`, `delivery_record`, `auth_event`,
    `correspondence`. If it cannot be classified, store it as `correspondence`

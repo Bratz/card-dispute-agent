@@ -106,6 +106,12 @@ def main():
     assert any(g["kind"] == "missing" for g in v2["gaps"])          # 13.3 requires correspondence
     assert v2["recommended"] and "correspondence" in v2["recommended"]["params"]["summary"]
     assert any(a["event"] == "case.raised_by" and a["actor"] == "User 1" for a in v2["audit"])
+    # lane-1 acquisition: the new case pulled its switch records by itself
+    k2 = {e["kind"] for e in v2["evidence"]}
+    assert {"transaction_event", "auth_event"} <= k2, k2
+    assert sum(1 for a in v2["audit"] if a["event"] == "evidence.pulled") == 2
+    # and the seeded case was never double-pulled (its kinds were already present)
+    assert not any(a["event"] == "evidence.pulled" for a in s.get_audit(c, cid))
 
     # ---- A0 triage: weak match waits for a person; assignment and rejection work ----
     r = s.triage_intake(c, {"note": "refund copy", "card_token": "tok_9f2a6b_4321", "amount": 129.99})
@@ -254,7 +260,7 @@ def main():
     sk_all = agent.load_skills()
     # 1) whitelists are derived from the skill files and differ per agent
     a1t, a2t = agent.agent_tools("A1", sk_all), agent.agent_tools("A2", sk_all)
-    assert "propose_action" not in a1t and "rebuild_timeline" in a1t
+    assert "propose_action" not in a1t and "rebuild_timeline" in a1t and "pull_from_systems" in a1t
     assert "propose_action" in a2t and "get_action_scores" in a2t and "rebuild_timeline" not in a2t
 
     # 2) nudge + enforcement + postcondition + persisted run (A2 on a fresh case)
@@ -270,13 +276,14 @@ def main():
                                           "summary": "fake proposes", "purpose": "fake-1"})], "tool_use"),
         resp([blk_text("proposed")], "end_turn"),
     ])
+    tlv_before = s.timeline_version(c, cidf)
     tr = agent.run_agent(c, cidf, "A2")
     assert any("nudge" in t for t in tr), tr
     assert s.pending_action(c, cidf), "postcondition should now hold"
     runs = s.list_agent_runs(c, cidf)
     assert runs and runs[0]["outcome"] == "complete" and runs[0]["tokens_out"] > 0
-    # the disallowed call was refused, not executed: no timeline was built on this case
-    assert s.timeline_version(c, cidf) == 0
+    # the disallowed rebuild_timeline call was refused: the version did not move
+    assert s.timeline_version(c, cidf) == tlv_before
 
     # 3) full fallback: a model that never acts -> the deterministic engine finishes
     r = s.raise_dispute(c, {"customer_id": "CUST-F2", "card_token": "tok_f2", "txn_id": "TXN-F2",

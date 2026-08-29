@@ -117,6 +117,9 @@ TOOL_SPECS = {
                           "and list what is blocked and why. Consult this before proposing.", {}, []),
     "request_approval":  ("Note that the proposed action awaits a person's sign-off.", {"action_id": "string"}, ["action_id"]),
     "get_audit":         ("Read the case audit trail.", {}, []),
+    "pull_from_systems": ("Pull what the case lacks from queryable systems of record (read-only, "
+                          "addressed by keys the case already holds). External parties still need a "
+                          "proposed request and a person's approval.", {}, []),
 }
 TOOL_NAMES = list(TOOL_SPECS.keys())
 
@@ -184,6 +187,9 @@ def _execute(conn, cid, skills, name, a):
         S.log_audit(conn, cid, "agent (llm)", "approval.requested", "action %s awaits a person" % a["action_id"])
         return "a person will review it"
     if name == "get_audit":       return S.get_audit(conn, cid)[-25:]
+    if name == "pull_from_systems":
+        pulled = S.acquire_evidence(conn, cid)
+        return {"pulled": pulled} if pulled else {"pulled": [], "note": "nothing addressable is missing"}
     return "unknown tool: " + name
 
 

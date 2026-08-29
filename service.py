@@ -714,7 +714,48 @@ def next_best_action(c, cid):
               breakdown)
     return aid
 
+# ---------------------------------------------------------------- evidence acquisition (lane 1: auto-pull)
+# Two-lane acquisition: systems of record the bank can QUERY are pulled from
+# automatically (read-only, addressed by a key the case already holds, audited).
+# External parties (merchant, cardholder) are lane 2: a proposed request behind
+# the approval gate. You can only pull what you can address.
+def _switch_lookup(case):
+    """Mock card-switch connector: what the network knows about this transaction."""
+    known = {
+        "TXN-88231": [
+            ("transaction_event", {"amount": 129.99, "currency": "USD", "merchant": "ACME Store", "auth": "approved"}),
+            ("auth_event", {"method": "3DS", "result": "frictionless", "device": "mobile"}),
+        ],
+    }
+    if case["disputed_txn_id"] in known:
+        return known[case["disputed_txn_id"]]
+    # representative mock: the switch can always answer for its own transactions
+    return [
+        ("transaction_event", {"amount": case["amount"], "currency": case["currency"],
+                               "auth": "approved", "source_note": "switch record for %s" % case["disputed_txn_id"]}),
+        ("auth_event", {"method": "3DS", "result": "frictionless"}),
+    ]
+
+def acquire_evidence(c, cid):
+    """Pull what the case needs from queryable systems of record — only kinds the
+    case does not already hold, only sources addressable by a key we hold."""
+    case = get_case(c, cid)
+    have = {e["kind"] for e in list_evidence(c, cid)}
+    pulled = []
+    for kind, payload in _switch_lookup(case):
+        if kind in have:
+            continue
+        assemble_evidence(c, cid, kind, "recorded_fact", payload,
+                          {"system": "card_switch", "authority": "authoritative", "supplied_by": "system pull"},
+                          payload.get("effective_at"))
+        log_audit(c, cid, "evidence-acquisition", "evidence.pulled",
+                  "%s pulled read-only from the card switch by transaction id" % kind)
+        pulled.append(kind)
+    return pulled
+
 def run_journey(c, cid):
+    # lane-1 acquisition: pull what the case lacks from queryable systems of record
+    acquire_evidence(c, cid)
     # A1 Evidence Reconciliation
     provenance_tagging(c, cid)
     duplicate_detection(c, cid)
