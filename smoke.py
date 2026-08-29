@@ -78,6 +78,12 @@ def main():
     case = s.get_case(c, cid)
     assert case["liability_outcome"] == "Merchant favour" and case["stage"] == "resolved"
 
+    # ---- no-code runtime loads (offline parts; the LLM loop needs a key) ----
+    import agent
+    sk = agent.load_skills()
+    assert len(sk) == 9 and all(sk[n]["body"] for n in sk), list(sk)
+    assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
+
     # ---- audit is append-only and complete ----
     assert count(c, "SELECT COUNT(*) FROM audit_entry WHERE case_id=?", (cid,)) >= 12
     c.commit()

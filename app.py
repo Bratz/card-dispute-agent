@@ -155,6 +155,25 @@ def decision(cid: str, outcome: str = Body(..., embed=True)):
         c.close()
 
 
+@app.post("/api/cases/{cid}/run-agent")
+def run_agent_ep(cid: str):
+    """Run the case with the no-code LLM runtime instead of the deterministic engine."""
+    if os.environ.get("CARD_DISPUTE_LLM") != "1":
+        return JSONResponse({"error": "No-code LLM runtime is off. Set CARD_DISPUTE_LLM=1 and ANTHROPIC_API_KEY."}, status_code=400)
+    c = db()
+    try:
+        import agent
+        transcript = agent.run_journey_llm(c, cid)
+        v = service.case_view(c, cid)
+        v["timeline_version"] = service.timeline_version(c, cid)
+        v["agent_transcript"] = transcript
+        return v
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        c.close()
+
+
 @app.post("/api/reset")
 def reset():
     c = service.init_db(reset=True)

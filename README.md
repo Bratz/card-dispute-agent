@@ -108,6 +108,27 @@ idempotent and approval-gated, and the analyst owns the liability decision.
   `CARD_DISPUTE_LLM=1` for a hybrid mode where the A2 agent, driven by its soul,
   adds a plain-language rationale for the proposed step; it never changes state.
 
+## No-code runtime (optional)
+
+The deterministic engine is the default. There is a second way to run the same
+work: an LLM agent, driven by its **soul**, reads the matching skill from
+`skills/<name>/SKILL.md` at runtime and calls the tools. **Editing a skill file
+changes what the agent does — with no Python change.** That is the no-code runtime.
+
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=...          # your key
+export CARD_DISPUTE_LLM=1
+python app.py
+curl -X POST http://127.0.0.1:8137/api/cases/DSP-100205/run-agent
+```
+
+The response returns the updated case plus a transcript of which skills the agent
+read and which tools it called. The loop is the standard Anthropic tool-use
+pattern (`agent.py`) — written from scratch, no third-party framework. The agent
+proposes actions for approval and never executes; card data stays data, not
+instructions.
+
 ## Data & security
 
 - **Synthetic data only.** No real cardholder or transaction data is used or
