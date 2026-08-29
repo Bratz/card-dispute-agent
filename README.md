@@ -79,22 +79,37 @@ Three layers, and one process serves the API and the UI.
 
 ```mermaid
 flowchart LR
-  UI["Operator UI<br/>static/index.html"] -->|HTTP · JSON| API
+  UI["Operator UI<br/>profile picker · identity on every call"] -->|HTTP · JSON · X-User| API
 
-  subgraph proc["Single process — app.py"]
+  subgraph proc["One process — app.py"]
     API["FastAPI<br/>/api · /health · /metrics"]
-    SK["Skills<br/>deterministic journey"]
-    TL["Tools<br/>read · derive · action · control"]
-    API --> SK --> TL
+    subgraph engines["The same journey, two engines"]
+      DET["Deterministic skills<br/>service.py — default"]
+      LLM["No-code LLM runtime<br/>agent.py reads skills/*.md — optional"]
+    end
+    subgraph ag["Two agents, souls + skills"]
+      A1["A1 Evidence Reconciliation"] -- "handoff · audited" --> A2["A2 Dispute Case Planner"]
+    end
+    ML["ml.py — demo NBA model<br/>P(success) · synthetic training"]
+    T["Tools<br/>read · derive · action · control"]
+    API --> engines
+    engines --> ag
+    ag --> T
+    A2 --> ML
   end
 
-  TL --> DB[("SQLite<br/>11-table evidence model<br/>versioned · provenance · append-only audit")]
-  TL -. execute_action only .-> EXT[["Mock external world<br/>ledger — reconcile on retry"]]
-  ANA(["Analyst"]) -. approve · decide liability .-> API
+  T --> DB[("SQLite<br/>11-table evidence model<br/>rules &amp; approval policy config<br/>append-only audit")]
+  T --> UP[("uploads/<br/>charge-slip photos")]
+  T -. execute_action only .-> EXT[["Mock external world<br/>reconcile on retry"]]
+  ROLES(["Team Lead · User 1 · User 2"]) -. "role-gated approvals · liability decision · rules edits" .-> API
 ```
 
+The same journey runs on either engine — deterministic skills by default, or the
+LLM reading the skill files (edit a `SKILL.md`, behaviour changes, no Python).
 Only `execute_action` reaches the external world; every external effect is
-idempotent and approval-gated, and the analyst owns the liability decision.
+idempotent and approval-gated. Money-moving actions need the Team Lead, the
+liability decision is always a person's, and the demo ML model only supplies the
+success probability inside the auditable score — it never acts.
 
 - **State store** — 11 tables: a versioned, provenance-tagged evidence model with
   an append-only audit and idempotency keys. See `docs/DESIGN.md` for the full
