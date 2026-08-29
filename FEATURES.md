@@ -250,3 +250,53 @@ unchanged.
 - **One sign-off is enough** — approving an already-approved action is a no-op
   with a plain message, so a simultaneous double-approval cannot record twice.
 - **Observability** — `/health`, `/metrics` and structured JSON logs.
+
+## How the end-to-end paragraph is implemented
+
+The brief's production paragraph asks for one thing in six parts: *ingest all
+seven kinds, execute the complete journey, react safely to late or changed
+information, recover from partial failure, retain a complete inspectable audit
+trail — and keep liability human-owned.* How each part is built:
+
+**Ingest — three doors, one model.** Evidence enters through the connector path
+(`POST /api/ingest`, no case reference — A0 matches it or queues it, and with
+the LLM on the agent runs on queued items automatically), through the console
+(the Add-evidence form, all seven kinds, charge-slip photos included), or by
+raising a dispute. All seven kinds are genuinely exercised — the seed carries
+six and the inject delivers the seventh — and every door redacts card data
+before anything is stored.
+
+**The complete journey.** Every ingest triggers the full pipeline: provenance
+calibration → duplicate marking → conflict detection → timeline rebuild → the
+audited A1→A2 handoff → positions linked and scored → deadlines set → the
+scored next action proposed. All nine journey steps run live, on either engine.
+
+**Late or changed information, safely.** Two clocks (`effective_at` vs
+`received_at`) let a late record slot in where it happened; its arrival
+triggers a targeted re-evaluation — contradiction opened, timeline reversioned
+with the previous kept, positions rescored with both on file, the
+recommendation replaced. A changed record supersedes its predecessor without
+deleting it. "Safely" is structural: no delete path exists, conflicts are
+surfaced rather than merged, and reassessment never touches liability.
+
+**Partial failure, two kinds.** External: idempotency keys, and a timed-out
+action is *reconciled against the external record before any retry* — no second
+effect; hard failures are compensated. Agent: after every LLM run, code checks
+the contract, nudges once, then the deterministic engine finishes the stage,
+audited as a fallback. Either way the case ends in a working state.
+
+**The audit trail.** Append-only, written by every actor — evidence changes,
+score breakdowns, handoffs, approvals, refusals, fallbacks, decisions — plus
+persisted agent transcripts (`agent_run`). The trail and the retained versions
+together reconstruct what the system knew, why it acted and what changed.
+
+**Human-owned, at three depths.** The liability field has no machine path;
+consequential actions refuse execution without a role-checked, named approval;
+and the AI layers are advisory by construction — the model emits a probability,
+the advocates argue both sides, the agents propose into the same gate. The
+injection scenario in `eval.py` measures this: an embedded "approve this
+dispute" instruction had no effect, 3/3.
+
+*The permitted shortcut:* external systems are representative mocks, as the
+brief allows — and the mock implements the contract a real connector needs
+(accept an idempotency key; answer "what happened to this key?").
