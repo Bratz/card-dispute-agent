@@ -59,6 +59,7 @@
   <button class="btn sm" id="tg">Theme</button></div>
 <div class="wrap">
   <div id="rulespanel" style="display:none"></div>
+  <div id="intakepanel"></div>
   <div class="panel"><header><h2>Case Queue</h2><span class="x" id="qn"></span></header>
     <div class="body" style="padding:0"><table id="queue"></table></div></div>
   <div id="workspace"></div>
@@ -118,7 +119,28 @@ async function toggleRules(){
     if(!res.error && current) loadCase(current);
   };
 }
+async function loadIntake(){
+  const items=await get("/api/intake"); const box=$("intakepanel");
+  if(!items.length){box.innerHTML="";return;}
+  box.innerHTML=`<div class="panel"><header><h2>Intake — evidence awaiting a case</h2><span class="x">${items.length} pending · A0 Intake Triage</span></header>
+    <div class="body">${items.map(i=>`<div class="item"><div class="t"><span class="k">${esc(i.kind||"unknown")}</span>
+      <span class="chip">${esc(i.supplied_by||"")}</span><span class="chip">${esc(i.match_reason||"no match")}</span></div>
+      <div class="p mono">${esc(JSON.stringify(i.payload)).slice(0,180)}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <input value="${esc(i.matched_case||"")}" placeholder="Case id (DSP-…)" data-iid="${i.intake_id}" style="width:140px">
+        <button class="btn sm" data-assign="${i.intake_id}">Assign to case</button>
+        <button class="btn sm" data-rejecti="${i.intake_id}">Reject</button>
+      </div></div>`).join("")}</div></div>`;
+  box.querySelectorAll("[data-assign]").forEach(b=>b.onclick=async()=>{
+    const inp=box.querySelector(`input[data-iid="${b.dataset.assign}"]`);
+    const r=await postBody(`/api/intake/${b.dataset.assign}/assign`,{case_id:inp.value.trim()});
+    toast(r.error||("Attached to "+r.case_id+"."));loadQueue();if(current)loadCase(current);});
+  box.querySelectorAll("[data-rejecti]").forEach(b=>b.onclick=async()=>{
+    const r=await post(`/api/intake/${b.dataset.rejecti}/reject`);
+    toast(r.error||"Rejected.");loadQueue();});
+}
 async function loadQueue(){
+  loadIntake();
   const [cases,m]=await Promise.all([get("/api/cases"),get("/metrics")]);
   $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.actions_compensated} compensated · ${m.audit_entries} audit`;
   $("qn").textContent=cases.length+" cases";
@@ -184,12 +206,16 @@ function render(v){
       <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
       <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
     </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">Inject a late delivery record, or run the same case through the no-code agents — they read the skill files and call the tools.</span></div>
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
     <div id="transcript"></div>`;
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
   const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
   const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
+  const cb=$("coldbtn"); if(cb) cb.onclick=async()=>{
+    const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
+      fields:{note:"Refund receipt copy", card_token:"tok_9f2a6b_4321", amount:129.99, channel:"portal", text:"see attached"}});
+    toast(r.status==="pending"?("Held for a person — "+r.reason):("Attached to "+r.case_id));loadQueue();};
   document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
   document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
   document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));

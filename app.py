@@ -227,6 +227,53 @@ def decision(cid: str, outcome: str = Body(..., embed=True), x_user: str = Heade
         c.close()
 
 
+@app.post("/api/ingest")
+def ingest(payload: dict = Body(...)):
+    """Evidence arriving cold, with no case reference — the connector path.
+    A0 Intake Triage classifies it, attaches it when the match is certain, and
+    queues the rest for a person."""
+    c = db()
+    try:
+        return service.triage_intake(c, payload.get("fields") or {}, kind=payload.get("kind"),
+                                     supplied_by=payload.get("supplied_by", "merchant"),
+                                     source_system=payload.get("source_system", "intake_feed"))
+    finally:
+        c.close()
+
+
+@app.get("/api/intake")
+def intake_list():
+    c = db()
+    try:
+        return service.list_intake(c)
+    finally:
+        c.close()
+
+
+@app.post("/api/intake/{iid}/assign")
+def intake_assign(iid: str, case_id: str = Body(..., embed=True), x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.resolve_intake(c, iid, case_id, x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+        return r
+    finally:
+        c.close()
+
+
+@app.post("/api/intake/{iid}/reject")
+def intake_reject(iid: str, x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.resolve_intake(c, iid, None, x_user, reject=True)
+        if r.get("error"):
+            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+        return r
+    finally:
+        c.close()
+
+
 @app.post("/api/cases/{cid}/run-agent")
 def run_agent_ep(cid: str):
     """Run the case with the no-code LLM runtime instead of the deterministic engine."""

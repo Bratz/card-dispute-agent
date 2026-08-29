@@ -122,6 +122,20 @@ CREATE TABLE reeval_trigger (
 );
 CREATE UNIQUE INDEX rt_pending ON reeval_trigger(case_id, scope) WHERE cleared_at IS NULL;
 
+-- Evidence that arrives without a case: the A0 Intake Triage agent classifies
+-- it, attaches it when the match is certain, and queues the rest for a person.
+CREATE TABLE intake_item (
+  intake_id TEXT PRIMARY KEY,
+  kind TEXT,                              -- may be inferred by triage
+  payload TEXT NOT NULL,                  -- JSON, redacted before storage
+  supplied_by TEXT, source_system TEXT,
+  received_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','attached','rejected')),
+  matched_case TEXT,                      -- suggestion or final assignment
+  match_reason TEXT,                      -- why it matched (or why it could not)
+  resolved_by TEXT, resolved_at TEXT
+);
+
 -- Runtime configuration edited from the Administration screen (reason-code
 -- rules, approval policy). Values are JSON.
 CREATE TABLE app_config (

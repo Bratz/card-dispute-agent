@@ -34,15 +34,18 @@ def main():
     conf = {e["kind"]: e["confidence"] for e in v["evidence"]}
     assert conf["transaction_event"] == 1.0 and conf["customer_statement"] == 0.5 and conf["receipt"] == 0.6, conf
     assert count(c, "SELECT COUNT(*) FROM evidence_item WHERE case_id=? AND status='duplicate'", (cid,)) == 1
-    assert len(s.AGENTS) == 2 and sum(len(a["skills"]) for a in s.AGENTS.values()) == 9
+    assert len(s.AGENTS) == 3 and sum(len(a["skills"]) for a in s.AGENTS.values()) == 10
     assert all(a["soul"] for a in s.AGENTS.values())
 
     # ---- the visible A1 -> A2 handoff ----
     assert any(a["event"] == "case.handoff" for a in v["audit"]), "no handoff event"
 
-    # ---- the inject (delivery_record = the seventh kind) ----
-    s.inject_late_evidence(c, cid)
+    # ---- the inject, COLD: no case reference; A0 matches it by order id ----
+    r = s.inject_late_evidence(c, cid)
+    assert r["status"] == "attached" and "order id" in r["reason"], r
     v = s.case_view(c, cid)
+    assert any(a["actor"] == "A0 Intake Triage" and a["event"] == "evidence.attached" for a in v["audit"])
+    assert any(a["actor"] == "A0 Intake Triage" and a["event"] == "case.handoff" for a in v["audit"])
     assert {e["kind"] for e in v["evidence"]} == set(s.EVIDENCE_KINDS), "all seven kinds now on the case"
     assert s.timeline_version(c, cid) >= 2             # rebuilt; earlier versions kept
     assert count(c, "SELECT COUNT(*) FROM timeline_event WHERE case_id=? AND version=1", (cid,)) == 2
@@ -76,6 +79,18 @@ def main():
     # ---- unapproved action is refused ----
     aid4 = s.propose_action(c, cid, "request_evidence", {"summary": "no approval"}, "test-noapp")
     r = s.execute_action(c, aid4, mode="ok"); assert r.get("error") == "not approved — refused", r
+
+    # ---- A0 triage: weak match waits for a person; assignment and rejection work ----
+    r = s.triage_intake(c, {"note": "refund copy", "card_token": "tok_9f2a6b_4321", "amount": 129.99})
+    assert r["status"] == "pending" and r["suggested_case"] == cid, r     # weak -> never auto-attach
+    assert s.resolve_intake(c, r["intake_id"], cid, "nobody").get("error")  # unknown user refused
+    a = s.resolve_intake(c, r["intake_id"], cid, "user1")
+    assert a.get("status") == "attached", a
+    r2 = s.triage_intake(c, {"gibberish": "no keys at all"})
+    assert r2["status"] == "pending" and r2["suggested_case"] is None
+    assert s.resolve_intake(c, r2["intake_id"], None, "user2", reject=True)["status"] == "rejected"
+    assert s._classify_intake({"tracking": "X1", "carrier": "Y"}) == "delivery_record"
+    assert s._classify_intake({"order_id": "O1", "total": 5}) == "receipt"
 
     # ---- NBA demo ML model: trained, sane, and on the record ----
     import ml
@@ -135,7 +150,7 @@ def main():
     # ---- no-code runtime loads (offline parts; the LLM loop needs a key) ----
     import agent
     sk = agent.load_skills()
-    assert len(sk) == 9 and all(sk[n]["body"] for n in sk), list(sk)
+    assert len(sk) == 10 and all(sk[n]["body"] for n in sk), list(sk)
     assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
 
     # ---- audit is append-only and complete ----

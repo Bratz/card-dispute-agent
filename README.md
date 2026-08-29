@@ -87,8 +87,9 @@ flowchart LR
       DET["Deterministic skills<br/>service.py — default"]
       LLM["No-code LLM runtime<br/>agent.py reads skills/*.md — optional"]
     end
-    subgraph ag["Two agents, souls + skills"]
-      A1["A1 Evidence Reconciliation"] -- "handoff · audited" --> A2["A2 Dispute Case Planner"]
+    subgraph ag["Three agents, souls + skills"]
+      A0["A0 Intake Triage"] -- "match · audited" --> A1["A1 Evidence Reconciliation"]
+      A1 -- "handoff · audited" --> A2["A2 Dispute Case Planner"]
     end
     ML["ml.py — demo NBA model<br/>P(success) · synthetic training"]
     T["Tools<br/>read · derive · action · control"]
@@ -135,6 +136,20 @@ The **Rules** button opens Administration: the reason-code rules (required
 evidence, representment window, permitted actions) and the approval policy (who
 signs off each action) are stored in the database and edited there — only the
 Team Lead can save. No code change is needed to change the operating rules.
+
+## Automatic case assignment — the A0 Intake Triage agent
+
+Evidence can arrive with **no case reference** — a delivery record on a merchant
+feed, a message, an authentication event. `POST /api/ingest` hands it to the
+**A0 Intake Triage** agent, which redacts it, works out what kind of item it is,
+and finds its case by the strongest key: a quoted dispute reference or
+transaction id (exact), an order id or tracking number already on one open case
+(strong), or a card token plus amount (weak). **It attaches only on exact or
+strong matches** and records why. Weak, ambiguous or unmatched items wait in an
+**Intake queue** for a person, with A0's best suggestion attached — because
+attaching evidence to the wrong case is worse than leaving it unattached. The
+finale inject runs through this path: the late delivery record arrives cold and
+finds its case by order id.
 
 ## Evidence intake — all seven kinds, photos included
 
