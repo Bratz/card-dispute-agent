@@ -1,8 +1,8 @@
 """Card Dispute — one process serves the API and the UI (same origin).
 Run: python app.py    then open http://127.0.0.1:8080
 """
-import os, logging
-from fastapi import FastAPI, Body
+import os, base64, logging
+from fastapi import FastAPI, Body, Header
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import service
@@ -63,7 +63,7 @@ def cases():
         out = []
         for case in service.list_cases(c):
             cid = case["case_id"]
-            rule = service.chargeback_rules(case["reason_code"])
+            rule = service.chargeback_rules(c, case["reason_code"])
             action = service.pending_action(c, cid)
             conflict = any(g["kind"] == "contradiction" and g["status"] == "open"
                            for g in service.list_gaps(c, cid, open_only=True))
@@ -120,12 +120,81 @@ def inject(cid: str):
         c.close()
 
 
-@app.post("/api/actions/{aid}/approve")
-def approve(aid: str):
+@app.get("/api/users")
+def users():
+    return service.USERS
+
+
+@app.get("/api/rules")
+def rules_get():
     c = db()
     try:
-        r = service.approve_action(c, aid)
+        return {"reasons": service.get_rules(c), "policy": service.get_policy(c)}
+    finally:
+        c.close()
+
+
+@app.put("/api/rules")
+def rules_put(payload: dict = Body(...), x_user: str = Header(default="")):
+    c = db()
+    try:
+        if payload.get("reasons") is not None:
+            r = service.save_rules(c, payload["reasons"], x_user)
+            if r.get("error"):
+                return JSONResponse(r, status_code=403)
+        if payload.get("policy") is not None:
+            r = service.save_policy(c, payload["policy"], x_user)
+            if r.get("error"):
+                return JSONResponse(r, status_code=403)
         c.commit()
+        return {"status": "saved"}
+    finally:
+        c.close()
+
+
+@app.post("/api/cases/{cid}/evidence")
+def add_evidence_ep(cid: str, payload: dict = Body(...), x_user: str = Header(default="")):
+    if x_user not in service.USERS:
+        return JSONResponse({"error": "unknown user — pick a profile first"}, status_code=403)
+    fields = payload.get("fields") or {}
+    image_bytes, image_name = None, payload.get("filename")
+    if payload.get("image_base64"):
+        try:
+            image_bytes = base64.b64decode(payload["image_base64"])
+        except Exception:
+            return JSONResponse({"error": "the photo could not be read"}, status_code=400)
+        # optional vision read of a charge slip: typed fields win, gaps are filled
+        if os.environ.get("CARD_DISPUTE_LLM") == "1" and payload.get("kind") == "receipt":
+            import agent
+            media = "image/png" if (image_name or "").lower().endswith(".png") else "image/jpeg"
+            seen = agent.read_charge_slip(payload["image_base64"], media)
+            if seen:
+                for k, v in seen.items():
+                    fields.setdefault(k, v)
+                fields["read_by"] = "vision"
+    c = db()
+    try:
+        r = service.add_evidence(c, cid, payload.get("kind"), fields,
+                                 supplied_by=payload.get("supplied_by", "analyst"),
+                                 image_name=image_name, image_bytes=image_bytes)
+        if r.get("error"):
+            return JSONResponse(r, status_code=400)
+        v = service.case_view(c, cid)
+        v["timeline_version"] = service.timeline_version(c, cid)
+        v["evidence_id"] = r["evidence_id"]
+        return v
+    finally:
+        c.close()
+
+
+@app.post("/api/actions/{aid}/approve")
+def approve(aid: str, x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.approve_action(c, aid, user_key=x_user)
+        c.commit()
+        if r and r.get("error"):
+            return JSONResponse(r, status_code=403)
         return r or {"error": "no such action"}
     finally:
         c.close()
@@ -143,13 +212,16 @@ def execute(aid: str, mode: str = "ok"):
 
 
 @app.post("/api/cases/{cid}/decision")
-def decision(cid: str, outcome: str = Body(..., embed=True)):
+def decision(cid: str, outcome: str = Body(..., embed=True), x_user: str = Header(default="")):
     c = db()
     try:
-        service.record_decision(c, cid, outcome)
+        r = service.record_decision(c, cid, outcome, user_key=x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=403)
         c.commit()
         v = service.case_view(c, cid)
         v["timeline_version"] = service.timeline_version(c, cid)
+        v["decided_by"] = r.get("by")
         return v
     finally:
         c.close()
@@ -182,6 +254,8 @@ def reset():
     return {"status": "reset"}
 
 
+os.makedirs(os.path.join(HERE, "uploads"), exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=os.path.join(HERE, "uploads")), name="uploads")
 app.mount("/", StaticFiles(directory=os.path.join(HERE, "static"), html=True), name="ui")
 
 if __name__ == "__main__":

@@ -108,6 +108,30 @@ idempotent and approval-gated, and the analyst owns the liability decision.
   `CARD_DISPUTE_LLM=1` for a hybrid mode where the A2 agent, driven by its soul,
   adds a plain-language rationale for the proposed step; it never changes state.
 
+## Users, roles and configurable rules
+
+Three profiles ship with the demo: **Team Lead**, **User 1** and **User 2**
+(analysts). Pick one in the top bar; every call carries that identity, and the
+server enforces it — an analyst can approve an evidence request, but raising a
+chargeback, representment or closing the case needs the Team Lead. Every approval
+and the liability decision is recorded with the person's name.
+
+The **Rules** button opens Administration: the reason-code rules (required
+evidence, representment window, permitted actions) and the approval policy (who
+signs off each action) are stored in the database and edited there — only the
+Team Lead can save. No code change is needed to change the operating rules.
+
+## Evidence intake — all seven kinds, photos included
+
+The case screen has an **Add evidence** form covering all seven kinds: cardholder
+statement, merchant record, transaction record, receipt / charge slip, delivery
+record, authentication event, correspondence. A charge slip can be attached as a
+**photo** with typed fields; the image is stored with the evidence and shown on
+the case. Card numbers in any text are masked on intake. With the LLM enabled,
+the vision model also reads the slip and fills in missing fields (typed fields
+always win). Each new item re-runs the reconciliation, and A1's handoff to A2 is
+written to the audit trail.
+
 ## No-code runtime (optional)
 
 The deterministic engine is the default. There is a second way to run the same

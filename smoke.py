@@ -11,11 +11,13 @@ def main():
     s.seed(c)
     cid = "DSP-100205"
 
-    # ---- opening state, from the journey ----
+    # ---- opening state, from the journey (six active kinds; delivery arrives later) ----
     v = s.case_view(c, cid)
-    assert len(v["evidence"]) == 3, v["evidence"]
+    kinds = {e["kind"] for e in v["evidence"]}
+    assert kinds == {"customer_statement", "transaction_event", "receipt",
+                     "auth_event", "merchant_record", "correspondence"}, kinds
     assert s.timeline_version(c, cid) == 1
-    assert len(v["timeline"]) == 1                      # only the transaction is a timeline event yet
+    assert len(v["timeline"]) == 2                      # authentication + transaction events
     hyps = {h["statement"]: h["confidence"] for h in v["hypotheses"]}
     assert len(hyps) == 2
     not_del = "Goods were not delivered to the customer"
@@ -35,12 +37,15 @@ def main():
     assert len(s.AGENTS) == 2 and sum(len(a["skills"]) for a in s.AGENTS.values()) == 9
     assert all(a["soul"] for a in s.AGENTS.values())
 
-    # ---- the inject ----
+    # ---- the visible A1 -> A2 handoff ----
+    assert any(a["event"] == "case.handoff" for a in v["audit"]), "no handoff event"
+
+    # ---- the inject (delivery_record = the seventh kind) ----
     s.inject_late_evidence(c, cid)
     v = s.case_view(c, cid)
-    assert len(v["evidence"]) == 4
-    assert s.timeline_version(c, cid) == 2             # rebuilt; v1 kept
-    assert count(c, "SELECT COUNT(*) FROM timeline_event WHERE case_id=? AND version=1", (cid,)) == 1
+    assert {e["kind"] for e in v["evidence"]} == set(s.EVIDENCE_KINDS), "all seven kinds now on the case"
+    assert s.timeline_version(c, cid) >= 2             # rebuilt; earlier versions kept
+    assert count(c, "SELECT COUNT(*) FROM timeline_event WHERE case_id=? AND version=1", (cid,)) == 2
     hyps = {h["statement"]: h["confidence"] for h in v["hypotheses"]}
     assert hyps[delivered] > hyps[not_del], hyps        # shifted to the merchant
     assert any(g["kind"] == "contradiction" and g["status"] == "open" for g in v["gaps"])
@@ -72,9 +77,40 @@ def main():
     aid4 = s.propose_action(c, cid, "request_evidence", {"summary": "no approval"}, "test-noapp")
     r = s.execute_action(c, aid4, mode="ok"); assert r.get("error") == "not approved — refused", r
 
+    # ---- role-based approval: money needs the Team Lead ----
+    aid5 = s.propose_action(c, cid, "raise_chargeback", {"summary": "role test"}, "test-role")
+    r = s.approve_action(c, aid5, user_key="user1")
+    assert r.get("error") and "team lead" in r["error"].lower(), r
+    r = s.approve_action(c, aid5, user_key="lead")
+    assert r.get("approval_id") and r.get("approved_by") == "Team Lead", r
+    # an analyst CAN approve an evidence request
+    aid6 = s.propose_action(c, cid, "request_evidence", {"summary": "analyst ok"}, "test-role-2")
+    assert s.approve_action(c, aid6, user_key="user2").get("approval_id")
+
+    # ---- reason-code rules are configurable (Team Lead only) ----
+    rules = s.get_rules(c)
+    rules["13.1"]["window_days"] = 10
+    assert s.save_rules(c, rules, "user1").get("error")            # analyst refused
+    assert s.save_rules(c, rules, "lead").get("status") == "saved" # lead allowed
+    assert s.chargeback_rules(c, "13.1")["window_days"] == 10
+    assert s.save_policy(c, s.get_policy(c), "user2").get("error")
+
+    # ---- evidence intake: a charge-slip photo + redaction on typed text ----
+    r = s.add_evidence(c, cid, "receipt",
+                       {"text": "slip shows card 4111 1111 1111 1111", "merchant": "ACME Store", "amount": 129.99},
+                       supplied_by="customer", image_name="slip.jpg", image_bytes=b"\xff\xd8fakejpg")
+    assert r.get("evidence_id"), r
+    item = s.one(c, "SELECT * FROM evidence_item WHERE evidence_id=?", (r["evidence_id"],))
+    p = s.jl(item["payload"])
+    assert "4111" not in p["text"] and "token_" in p["text"], p    # PAN masked
+    assert p.get("image", "").startswith("uploads/") and \
+           __import__("os").path.exists(__import__("os").path.join(s.HERE, p["image"]))
+    assert item["assertion_type"] == "user_input"                   # customer-supplied
+    assert s.add_evidence(c, cid, "not_a_kind", {}).get("error")    # unknown kind refused
+
     # ---- decision is human-owned; liability was never set by the journey ----
     assert s.get_case(c, cid)["liability_outcome"] is None
-    s.record_decision(c, cid, "Merchant favour")
+    s.record_decision(c, cid, "Merchant favour", user_key="user1")
     case = s.get_case(c, cid)
     assert case["liability_outcome"] == "Merchant favour" and case["stage"] == "resolved"
 

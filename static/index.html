@@ -52,9 +52,13 @@
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head><body>
 <div class="bar"><b>Disputes Console</b><span class="m" id="meta"></span><span class="sp"></span>
+  <label style="font-size:12px;color:var(--muted)">Signed in as</label>
+  <select id="who"></select>
+  <button class="btn sm" id="rulesbtn">Rules</button>
   <button class="btn sm" id="reset">Reset demo</button>
   <button class="btn sm" id="tg">Theme</button></div>
 <div class="wrap">
+  <div id="rulespanel" style="display:none"></div>
   <div class="panel"><header><h2>Case Queue</h2><span class="x" id="qn"></span></header>
     <div class="body" style="padding:0"><table id="queue"></table></div></div>
   <div id="workspace"></div>
@@ -64,9 +68,12 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const money=(a,c)=>a==null?"":a.toFixed(2)+" "+(c||"");
-async function get(u){return (await fetch(u)).json();}
-async function post(u){return (await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"}})).json();}
-async function postBody(u,b){return (await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})).json();}
+function me(){try{return localStorage.getItem("dc-user")||"user1"}catch(e){return "user1"}}
+function hdrs(){return {"Content-Type":"application/json","X-User":me()};}
+async function get(u){return (await fetch(u,{headers:hdrs()})).json();}
+async function post(u){return (await fetch(u,{method:"POST",headers:hdrs()})).json();}
+async function postBody(u,b){return (await fetch(u,{method:"POST",headers:hdrs(),body:JSON.stringify(b)})).json();}
+async function putBody(u,b){return (await fetch(u,{method:"PUT",headers:hdrs(),body:JSON.stringify(b)})).json();}
 function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;$("toasts").appendChild(t);setTimeout(()=>{t.style.opacity=0;t.style.transition="opacity .3s";setTimeout(()=>t.remove(),300)},2800);}
 // theme
 (function(){try{const s=localStorage.getItem("dc2");if(s)document.documentElement.setAttribute("data-theme",s)}catch(e){}
@@ -74,6 +81,43 @@ function toast(m){const t=document.createElement("div");t.className="toast";t.te
  $("tg").onclick=()=>{const n=cur()==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",n);try{localStorage.setItem("dc2",n)}catch(e){}};})();
 
 let current=null;
+async function loadUsers(){
+  const us=await get("/api/users"); const sel=$("who");
+  sel.innerHTML=Object.entries(us).map(([k,u])=>`<option value="${k}">${esc(u.name)} · ${esc(u.role.replace("_"," "))}</option>`).join("");
+  sel.value=me();
+  sel.onchange=()=>{try{localStorage.setItem("dc-user",sel.value)}catch(e){};toast("Now working as "+sel.options[sel.selectedIndex].text);};
+}
+async function toggleRules(){
+  const box=$("rulespanel");
+  if(box.style.display!=="none"){box.style.display="none";return;}
+  const r=await get("/api/rules");
+  const reasonRows=Object.entries(r.reasons).map(([code,x])=>`<tr>
+    <td class="mono">${esc(code)}</td><td>${esc(x.text)}</td>
+    <td><input data-rk="${code}" data-f="window_days" value="${x.window_days}" style="width:52px"></td>
+    <td><input data-rk="${code}" data-f="required" value="${esc((x.required||[]).join(", "))}" style="width:180px"></td>
+    <td><input data-rk="${code}" data-f="actions" value="${esc((x.actions||[]).join(", "))}" style="width:260px"></td></tr>`).join("");
+  const polRows=Object.entries(r.policy).map(([act,role])=>`<tr><td>${esc(act.replace(/_/g," "))}</td>
+    <td><select data-pk="${act}"><option value="analyst" ${role==="analyst"?"selected":""}>Analyst</option>
+    <option value="team_lead" ${role==="team_lead"?"selected":""}>Team Lead</option></select></td></tr>`).join("");
+  box.innerHTML=`<div class="panel"><header><h2>Administration — reason-code rules &amp; approval policy</h2><span class="x">Team Lead can save</span></header>
+    <div class="body"><table><thead><tr><th>Code</th><th>Meaning</th><th>Window (days)</th><th>Required evidence</th><th>Permitted actions</th></tr></thead><tbody>${reasonRows}</tbody></table>
+    <div style="height:10px"></div>
+    <table style="max-width:420px"><thead><tr><th>Action</th><th>Needs sign-off from</th></tr></thead><tbody>${polRows}</tbody></table>
+    <div style="margin-top:10px"><button class="btn pri" id="saverules">Save rules</button></div></div></div>`;
+  box.style.display="block";
+  $("saverules").onclick=async()=>{
+    const reasons={}; Object.entries(r.reasons).forEach(([code,x])=>{reasons[code]={...x};});
+    box.querySelectorAll("input[data-rk]").forEach(i=>{
+      const o=reasons[i.dataset.rk];
+      if(i.dataset.f==="window_days")o.window_days=parseInt(i.value)||30;
+      else o[i.dataset.f]=i.value.split(",").map(s=>s.trim()).filter(Boolean);
+    });
+    const policy={}; box.querySelectorAll("select[data-pk]").forEach(s=>policy[s.dataset.pk]=s.value);
+    const res=await putBody("/api/rules",{reasons,policy});
+    toast(res.error||"Rules saved.");
+    if(!res.error && current) loadCase(current);
+  };
+}
 async function loadQueue(){
   const [cases,m]=await Promise.all([get("/api/cases"),get("/metrics")]);
   $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.actions_compensated} compensated · ${m.audit_entries} audit`;
@@ -99,7 +143,9 @@ async function loadCase(id){
   window.scrollTo({top:document.getElementById("workspace").offsetTop-60,behavior:"smooth"});
 }
 function render(v){
-  const c=v.case, ev=v.evidence.map(e=>`<div class="item"><div class="t"><span class="k">${esc(e.kind)}</span><span class="chip">${esc(e.assertion_type)}</span><span class="chip">${esc(e.source_authority||'')}</span>${e.kind==='delivery_record'?'<span class="chip new">late · new</span>':''}<span class="w">${esc((e.effective_at||'').slice(0,10))}</span></div><div class="p mono">${esc(JSON.stringify(e.payload))}</div></div>`).join("");
+  const c=v.case, ev=v.evidence.map(e=>{
+    const img=e.payload&&e.payload.image?`<div style="margin-top:6px"><a href="/${esc(e.payload.image)}" target="_blank"><img src="/${esc(e.payload.image)}" alt="attached photo" style="max-height:70px;border:1px solid var(--line);border-radius:4px"></a></div>`:"";
+    return `<div class="item"><div class="t"><span class="k">${esc(e.kind)}</span><span class="chip">${esc(e.assertion_type)}</span><span class="chip">${esc(e.source_authority||'')}</span>${e.kind==='delivery_record'?'<span class="chip new">late · new</span>':''}<span class="w">${esc((e.effective_at||'').slice(0,10))}</span></div><div class="p mono">${esc(JSON.stringify(e.payload))}</div>${img}</div>`;}).join("");
   const tl=v.timeline.map(t=>`<div class="e"><div class="d">${esc((t.occurred_at||'').replace('T',' ').slice(0,16))}</div>${esc(t.description)}</div>`).join("")||'<div style="color:var(--muted)">no events yet</div>';
   const gaps=v.gaps.map(g=>{const ab=JSON.parse(g.about||"{}");return `<div class="exc ${g.kind} ${g.status==='resolved'?'resolved':''}"><span class="tag">${g.kind}</span><span>${esc(ab.text|| (g.kind==='contradiction'?'cardholder vs delivery record':'delivery evidence'))}</span></div>`;}).join("")||'<div style="color:var(--muted);font-size:12.5px">No open exceptions.</div>';
   const aud=v.audit.map(a=>`<div class="a"><span class="ac">${esc(a.actor)}</span><span>${esc(a.event)}<span class="r">${esc(a.reason||'')}</span></span><span class="tm">${esc((a.at||'').slice(11,19))}</span></div>`).join("");
@@ -111,6 +157,25 @@ function render(v){
       <div class="panel" id="p-case"><header><h2>Case</h2></header><div class="body"><div class="kv"><dt>Cardholder</dt><dd class="mono">${esc(c.customer_id)}</dd><dt>Card</dt><dd><span class="chip tok">${esc(c.card_id)}</span></dd><dt>Amount</dt><dd>${money(c.amount,c.currency)}</dd><dt>Reason</dt><dd>${c.reason_code}</dd></div></div></div>
       <div class="panel" id="p-tl"><header><h2>Event timeline</h2><span class="x">v${v.timeline_version}${v.timeline_version>1?' · previous kept':''}</span></header><div class="body"><div class="tl">${tl}</div></div></div>
       <div class="panel" id="p-ev"><header><h2>Evidence</h2><span class="x">${v.evidence.length} items</span></header><div class="body">${ev}</div></div>
+      <div class="panel" id="p-add"><header><h2>Add evidence</h2><span class="x">all seven kinds · photo optional</span></header><div class="body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <select id="ev-kind">
+            <option value="customer_statement">Cardholder statement</option>
+            <option value="merchant_record">Merchant record</option>
+            <option value="transaction_event">Transaction record</option>
+            <option value="receipt" selected>Receipt / charge slip</option>
+            <option value="delivery_record">Delivery record</option>
+            <option value="auth_event">Authentication event</option>
+            <option value="correspondence">Correspondence</option>
+          </select>
+          <select id="ev-from"><option value="customer">From the cardholder</option><option value="merchant" selected>From the merchant</option><option value="analyst">Keyed by analyst</option></select>
+          <input id="ev-text" placeholder="Description / text" style="grid-column:1/3">
+          <input id="ev-merchant" placeholder="Merchant"><input id="ev-amount" placeholder="Amount">
+          <input id="ev-date" placeholder="Date (YYYY-MM-DD)"><input id="ev-photo" type="file" accept="image/*">
+        </div>
+        <div style="margin-top:9px"><button class="btn pri" id="ev-add">Add to the case</button>
+        <span style="font-size:11px;color:var(--faint);margin-left:8px">Card numbers in text are masked on intake.</span></div>
+      </div></div>
     </div><div>
       <div class="panel" id="p-pos"><header><h2>Case assessment</h2><span class="x">both kept</span></header><div class="body">${positions(v.hypotheses)}</div></div>
       <div class="panel" id="p-exc"><header><h2>Exceptions</h2></header><div class="body">${gaps}</div></div>
@@ -123,6 +188,7 @@ function render(v){
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
   const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
+  const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
   document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
   document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
   document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));
@@ -141,10 +207,25 @@ function renderTranscript(tr){
     : `<div class="a"><span class="ac">final</span><span>${esc((s.final||"").slice(0,400))}</span></div>`).join("");
   box.innerHTML=`<div class="panel"><header><h2>No-code agent transcript</h2><span class="x">skills read &amp; tools called</span></header><div class="body"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">A1 Evidence Reconciliation</div><div class="aud">${rows("A1")}</div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 0 4px">A2 Dispute Case Planner</div><div class="aud">${rows("A2")}</div></div></div>`;
 }
-async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.note||"Approved.");loadCase(current);}
+async function doAddEvidence(){
+  const f={}; const t=$("ev-text").value, m=$("ev-merchant").value, a=$("ev-amount").value, d=$("ev-date").value;
+  if(t)f.text=t; if(m)f.merchant=m; if(a)f.amount=parseFloat(a)||a; if(d)f.date=d;
+  const body={kind:$("ev-kind").value, supplied_by:$("ev-from").value, fields:f};
+  const file=$("ev-photo").files[0];
+  if(file){
+    const b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.readAsDataURL(file);});
+    body.image_base64=b64; body.filename=file.name;
+  }
+  const v=await postBody(`/api/cases/${current}/evidence`,body);
+  if(v.error){toast(v.error);return;}
+  render(v); loadQueue(); toast("Evidence added — the case re-reconciled.");
+}
+async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.error||r.note||("Approved by "+(r.approved_by||me())+"."));loadCase(current);}
 async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await post(`/api/actions/${aid}/execute?mode=${mode}`);
   toast(r.error?("Refused: "+r.error):(r.reconciled?"Reconciled — no second effect.":r.note?("Executing: "+r.note):("Action "+r.status+".")));loadCase(current);loadQueue();}
-async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});render(v);toast("Liability recorded — case closed.");loadQueue();}
+async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});if(v.error){toast(v.error);return;}render(v);toast("Liability recorded by "+(v.decided_by||me())+" — case closed.");loadQueue();}
 $("reset").onclick=async()=>{await post("/api/reset");current=null;$("workspace").innerHTML="";toast("Demo reset.");loadQueue();};
+$("rulesbtn").onclick=toggleRules;
+loadUsers();
 loadQueue();
 </script></body></html>

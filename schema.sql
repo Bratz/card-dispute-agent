@@ -122,6 +122,13 @@ CREATE TABLE reeval_trigger (
 );
 CREATE UNIQUE INDEX rt_pending ON reeval_trigger(case_id, scope) WHERE cleared_at IS NULL;
 
+-- Runtime configuration edited from the Administration screen (reason-code
+-- rules, approval policy). Values are JSON.
+CREATE TABLE app_config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- The mock external world, so partial-failure recovery can reconcile against a
 -- record that is separate from our own action state.
 CREATE TABLE external_ledger (

@@ -247,8 +247,27 @@ def clear_reeval(c, cid, scope):
     c.execute("UPDATE reeval_trigger SET cleared_at=? WHERE case_id=? AND scope=? AND cleared_at IS NULL",
               (now(), cid, scope))
 
-# ---------------------------------------------------------------- reference data
-REASON_RULES = {
+# ---------------------------------------------------------------- users & roles
+USERS = {
+    "lead":  {"name": "Team Lead", "role": "team_lead"},
+    "user1": {"name": "User 1",    "role": "analyst"},
+    "user2": {"name": "User 2",    "role": "analyst"},
+}
+
+# Which role may approve each action type. Money-moving needs the team lead.
+DEFAULT_POLICY = {
+    "request_evidence":      "analyst",
+    "send_correspondence":   "analyst",
+    "raise_chargeback":      "team_lead",
+    "submit_representment":  "team_lead",
+    "close_case":            "team_lead",
+}
+
+def role_allows(role, needed):
+    return role == "team_lead" or role == needed   # a team lead can approve anything
+
+# ---------------------------------------------------------------- reference data (configurable)
+DEFAULT_RULES = {
     "13.1": {"text": "Services not received", "required": ["delivery_record"], "window_days": 30,
              "actions": ["request_evidence", "raise_chargeback", "submit_representment"]},
     "13.3": {"text": "Not as described", "required": ["correspondence"], "window_days": 30,
@@ -259,8 +278,41 @@ REASON_RULES = {
              "actions": ["raise_chargeback"]},
 }
 
-def chargeback_rules(reason_code):
-    return REASON_RULES.get(reason_code, {"text": reason_code, "required": [], "window_days": 30, "actions": []})
+def _ensure_config(c):
+    c.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+def _config_get(c, key, default):
+    _ensure_config(c)
+    r = one(c, "SELECT value FROM app_config WHERE key=?", (key,))
+    return jl(r["value"]) if r else default
+
+def _config_set(c, key, value):
+    _ensure_config(c)
+    c.execute("INSERT INTO app_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              (key, jd(value)))
+
+def get_rules(c):
+    return _config_get(c, "reason_rules", DEFAULT_RULES)
+
+def save_rules(c, rules, user_key):
+    u = USERS.get(user_key)
+    if not u or u["role"] != "team_lead":
+        return {"error": "only the Team Lead can change the rules"}
+    _config_set(c, "reason_rules", rules)
+    return {"status": "saved"}
+
+def get_policy(c):
+    return _config_get(c, "approval_policy", DEFAULT_POLICY)
+
+def save_policy(c, policy, user_key):
+    u = USERS.get(user_key)
+    if not u or u["role"] != "team_lead":
+        return {"error": "only the Team Lead can change the approval policy"}
+    _config_set(c, "approval_policy", policy)
+    return {"status": "saved"}
+
+def chargeback_rules(c, reason_code):
+    return get_rules(c).get(reason_code, {"text": reason_code, "required": [], "window_days": 30, "actions": []})
 
 # ---------------------------------------------------------------- action tools
 def propose_action(c, cid, atype, params, purpose):
@@ -278,18 +330,27 @@ def pending_action(c, cid):
     # newest proposed/approved action is the current recommendation (rowid = insertion order)
     return one(c, "SELECT * FROM case_action WHERE case_id=? AND status IN ('proposed','approved','executing') ORDER BY rowid DESC LIMIT 1", (cid,))
 
-def approve_action(c, aid, role="team_lead", who="user_4471"):
+def approve_action(c, aid, user_key="lead"):
     a = one(c, "SELECT * FROM case_action WHERE action_id=?", (aid,))
     if not a:
         return None
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
+    needed = get_policy(c).get(a["type"], "team_lead")
+    if not role_allows(user["role"], needed):
+        log_audit(c, a["case_id"], "approval", "action.refused",
+                  "%s (%s) may not approve %s — needs %s" % (user["name"], user["role"], a["type"], needed))
+        return {"error": "%s needs a %s to approve it — you are signed in as %s (%s)"
+                % (a["type"], needed.replace("_", " "), user["name"], user["role"])}
     if a["status"] in ("done", "compensated"):
         return {"note": "already actioned — runs once"}
     apid = uid()
     c.execute("INSERT INTO approval(approval_id,case_id,action_id,decision,approver_role,approver_id,decided_at) VALUES(?,?,?,?,?,?,?)",
-              (apid, a["case_id"], aid, "approve", role, who, now()))
+              (apid, a["case_id"], aid, "approve", user["role"], user["name"], now()))
     c.execute("UPDATE case_action SET status='approved', approval_id=? WHERE action_id=?", (apid, aid))
-    log_audit(c, a["case_id"], "approval", "action.approved", a["type"])
-    return {"approval_id": apid}
+    log_audit(c, a["case_id"], "approval", "action.approved", "%s by %s (%s)" % (a["type"], user["name"], user["role"]))
+    return {"approval_id": apid, "approved_by": user["name"]}
 
 def _external_call(c, key, mode):
     """Mock external world. 'timeout' completes on the far side but the reply is
@@ -340,11 +401,15 @@ def execute_action(c, aid, mode="ok"):
     return {"status": "compensated"}
 
 # ---------------------------------------------------------------- decision (human only)
-def record_decision(c, cid, outcome, who="analyst_jpatel"):
+def record_decision(c, cid, outcome, user_key="user1"):
     assert outcome in ("Cardholder favour", "Merchant favour", "No recovery")
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
     c.execute("UPDATE dispute_case SET liability_outcome=?, stage='resolved', status='closed', updated_at=? WHERE case_id=?",
               (outcome, now(), cid))
-    log_audit(c, cid, "analyst", "liability.recorded", outcome + " — case closed")
+    log_audit(c, cid, user["name"], "liability.recorded", outcome + " — case closed")
+    return {"status": "recorded", "by": user["name"]}
 
 # ---------------------------------------------------------------- skills (deterministic) & journey
 CANDIDATE_HYPS = [
@@ -414,7 +479,7 @@ def duplicate_detection(c, cid):
 
 def conflict_detection(c, cid):
     case = get_case(c, cid)
-    rule = chargeback_rules(case["reason_code"])
+    rule = chargeback_rules(c, case["reason_code"])
     kinds = {e["kind"] for e in list_evidence(c, cid)}
     for req in rule["required"]:
         if req not in kinds:
@@ -449,13 +514,13 @@ def hypothesis_management(c, cid):
 
 def deadline_tracking(c, cid):
     case = get_case(c, cid)
-    rule = chargeback_rules(case["reason_code"])
+    rule = chargeback_rules(c, case["reason_code"])
     due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=rule["window_days"])).date().isoformat()
     set_deadline(c, cid, "representment_window", due)
 
 def next_best_action(c, cid):
     case = get_case(c, cid)
-    rule = chargeback_rules(case["reason_code"])
+    rule = chargeback_rules(c, case["reason_code"])
     gaps = list_gaps(c, cid, open_only=True)
     contradiction = next((g for g in gaps if g["kind"] == "contradiction"), None)
     missing = next((g for g in gaps if g["kind"] == "missing"), None)
@@ -477,14 +542,52 @@ def next_best_action(c, cid):
     return None
 
 def run_journey(c, cid):
-    provenance_tagging(c, cid)      # A1
-    duplicate_detection(c, cid)     # A1
-    conflict_detection(c, cid)      # A1
-    rebuild_timeline(c, cid)        # A1
-    hypothesis_management(c, cid)   # A2
-    deadline_tracking(c, cid)       # A2
-    next_best_action(c, cid)        # A2 (applies chargeback-rules)
+    # A1 Evidence Reconciliation
+    provenance_tagging(c, cid)
+    duplicate_detection(c, cid)
+    conflict_detection(c, cid)
+    rebuild_timeline(c, cid)
+    # the visible inter-agent handoff: A1 hands the reconciled case to A2
+    log_audit(c, cid, "A1 Evidence Reconciliation", "case.handoff",
+              "evidence reconciled — handed to A2 Dispute Case Planner")
+    # A2 Dispute Case Planner
+    hypothesis_management(c, cid)
+    deadline_tracking(c, cid)
+    next_best_action(c, cid)        # applies chargeback-rules
     agent_reason(c, cid)            # optional LLM narrative (off by default)
+
+# ---------------------------------------------------------------- evidence intake (all seven kinds)
+EVIDENCE_KINDS = ["customer_statement", "merchant_record", "transaction_event", "receipt",
+                  "delivery_record", "auth_event", "correspondence"]
+UPLOADS = os.path.join(HERE, "uploads")
+
+def add_evidence(c, cid, kind, fields, supplied_by="analyst", image_name=None, image_bytes=None):
+    """Intake for any of the seven evidence kinds; a charge slip arrives as a photo
+    (image_bytes) plus typed fields. The image is stored on disk; the payload keeps
+    only its path. Text fields are redacted by the normal intake path."""
+    if kind not in EVIDENCE_KINDS:
+        return {"error": "unknown evidence kind: %s" % kind}
+    if not get_case(c, cid):
+        return {"error": "no such case"}
+    payload = {k: v for k, v in (fields or {}).items() if v not in (None, "")}
+    if image_bytes:
+        os.makedirs(UPLOADS, exist_ok=True)
+        ext = os.path.splitext(image_name or "")[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+            ext = ".jpg"
+        fname = uid() + ext
+        with open(os.path.join(UPLOADS, fname), "wb") as f:
+            f.write(image_bytes)
+        payload["image"] = "uploads/" + fname
+    assertion = "user_input" if supplied_by == "customer" else "recorded_fact"
+    authority = {"customer": "first_party", "merchant": "second_party",
+                 "switch": "authoritative"}.get(supplied_by, "second_party")
+    eid = assemble_evidence(c, cid, kind, assertion, payload,
+                            {"system": "dispute_portal", "authority": authority, "supplied_by": supplied_by},
+                            payload.get("effective_at") or now())
+    run_journey(c, cid)             # re-reconcile with the new evidence
+    c.commit()
+    return {"evidence_id": eid}
 
 def open_case(c, cid, **k):
     c.execute("""INSERT INTO dispute_case(case_id,customer_id,card_id,disputed_txn_id,reason_code,amount,currency,stage,opened_at,updated_at)
@@ -519,6 +622,18 @@ def seed(c):
                       {"order_id": "ORD-5567", "items": ["Widget"], "total": 129.99, "note": "resend"},
                       {"system": "merchant_portal", "authority": "second_party", "supplied_by": "merchant"},
                       "2026-07-20T14:20:00+00:00")
+    assemble_evidence(c, cid, "auth_event", "recorded_fact",
+                      {"method": "3DS", "result": "frictionless", "device": "mobile"},
+                      {"system": "card_switch", "authority": "authoritative", "supplied_by": "switch"},
+                      "2026-07-20T14:11:00+00:00")
+    assemble_evidence(c, cid, "merchant_record", "recorded_fact",
+                      {"store": "ACME Store", "order_status": "shipped", "ship_to": "on file"},
+                      {"system": "merchant_portal", "authority": "second_party", "supplied_by": "merchant"},
+                      "2026-07-21T08:00:00+00:00")
+    assemble_evidence(c, cid, "correspondence", "user_input",
+                      {"channel": "email", "text": "Customer emailed asking where the order is."},
+                      {"system": "dispute_portal", "authority": "first_party", "supplied_by": "customer"},
+                      "2026-07-28T09:00:00+00:00")
     run_journey(c, cid)
     # a few queue-only cases with a proposed action, to populate the list
     extra = [

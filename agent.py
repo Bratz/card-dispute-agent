@@ -158,5 +158,30 @@ def run_agent(conn, cid, agent_key, max_turns=24):
 
 
 def run_journey_llm(conn, cid):
-    """No-code journey: A1 reconciles, then A2 plans — each an LLM agent over its skills."""
-    return {"A1": run_agent(conn, cid, "A1"), "A2": run_agent(conn, cid, "A2")}
+    """No-code journey: A1 reconciles, hands the case over, then A2 plans."""
+    a1 = run_agent(conn, cid, "A1")
+    S.log_audit(conn, cid, "A1 Evidence Reconciliation", "case.handoff",
+                "evidence reconciled — handed to A2 Dispute Case Planner")
+    conn.commit()
+    a2 = run_agent(conn, cid, "A2")
+    return {"A1": a1, "A2": a2}
+
+
+def read_charge_slip(image_b64, media_type="image/jpeg"):
+    """Optional vision read of a charge-slip photo. Returns {merchant, amount,
+    currency, date} or None. Used only when CARD_DISPUTE_LLM=1; typed fields win."""
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        msg = client.messages.create(model=MODEL, max_tokens=300, messages=[{
+            "role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
+                {"type": "text", "text": "This is a card charge slip. Reply with only a JSON object with keys "
+                                          "merchant, amount, currency, date. Use null for anything unreadable."}]}])
+        txt = "".join(b.text for b in msg.content if b.type == "text").strip()
+        if txt.startswith("```"):
+            txt = txt.strip("`").lstrip("json").strip()
+        out = json.loads(txt)
+        return {k: out.get(k) for k in ("merchant", "amount", "currency", "date") if out.get(k) is not None}
+    except Exception:
+        return None
