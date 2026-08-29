@@ -150,8 +150,9 @@ the machine.
 ## If something goes wrong
 
 - Any panel looks stale → click the case row again (it re-reads from the API).
-- The LLM beats error → say "the deterministic engine is the product; the LLM
-  is an option" and continue — the spine never needed it.
+- The LLM beats error → say "the agents run the case; if the model is ever
+  unavailable, the case still runs — the deterministic engine is the always-on
+  floor, and the fallback lands on the audit trail" — and continue.
 - Total failure → the recorded rehearsal.
 
 ## Questions to expect, and the honest answers

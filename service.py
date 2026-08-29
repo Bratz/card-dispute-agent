@@ -3,7 +3,7 @@
 Ponytail: raw sqlite3, no ORM; skills are plain functions; the LLM is optional
 and never on the happy path. One worked case is driven by real code end to end.
 """
-import os, re, json, uuid, hashlib, logging, datetime
+import os, re, json, uuid, hashlib, logging, datetime, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "card_dispute.db")
@@ -33,7 +33,16 @@ def connect(path=DB_PATH):
     c = sqlite3.connect(path)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
+    c.execute("PRAGMA journal_mode=WAL")      # concurrent readers while a writer works
+    c.execute("PRAGMA busy_timeout=5000")
     return c
+
+# per-case serialization (in-process; WAL covers the file level)
+_case_locks, _case_locks_guard = {}, threading.Lock()
+
+def case_lock(cid):
+    with _case_locks_guard:
+        return _case_locks.setdefault(cid, threading.RLock())
 
 def init_db(path=DB_PATH, reset=False):
     if reset and os.path.exists(path):
@@ -583,11 +592,10 @@ def _position_conf(c, cid):
             cc = (h["confidence"] or 0) / 100.0
     return mc, cc
 
-def next_best_action(c, cid):
-    """Rank the permitted candidates: score = P(success) x amount factor x urgency
-    x authority. P(success) comes from the demo ML model (trained on synthetic
-    outcomes); dependencies are a hard filter, and every proposal records its full
-    breakdown so 'why this action' is always answerable."""
+def score_candidates(c, cid):
+    """Pure scoring pass: rank the permitted candidates, name the blocked ones.
+    score = P(success) x amount factor x urgency x authority. Used by the
+    deterministic planner AND exposed to the LLM planner as a tool."""
     import ml
     case = get_case(c, cid)
     rule = chargeback_rules(c, case["reason_code"])
@@ -640,8 +648,15 @@ def next_best_action(c, cid):
                    "a merchant position below 70%")
             blocked.append({"atype": "submit_representment", "why": "blocked by " + why})
 
+    return candidates, blocked, {"days_left": days, "urgency": urgency, "amount_factor": amount_factor}
+
+def next_best_action(c, cid):
+    """Deterministic planner: score, then propose the winner with its breakdown."""
+    candidates, blocked, meta = score_candidates(c, cid)
+    amount_factor = meta["amount_factor"]
+    policy = get_policy(c)
     if not candidates:
-        if days < 2:
+        if meta["days_left"] < 2:
             request_intervention(c, cid, "window closes in under 48 hours and no action is possible")
         if blocked:
             log_audit(c, cid, "next-best-action", "action.blocked",
@@ -690,6 +705,7 @@ def add_evidence(c, cid, kind, fields, supplied_by="analyst", image_name=None, i
         return {"error": "unknown evidence kind: %s" % kind}
     if not get_case(c, cid):
         return {"error": "no such case"}
+    lock = case_lock(cid); lock.acquire()
     payload = {k: v for k, v in (fields or {}).items() if v not in (None, "")}
     if image_bytes:
         os.makedirs(UPLOADS, exist_ok=True)
@@ -708,6 +724,7 @@ def add_evidence(c, cid, kind, fields, supplied_by="analyst", image_name=None, i
                             payload.get("effective_at") or None)
     run_journey(c, cid)             # re-reconcile with the new evidence
     c.commit()
+    lock.release()
     return {"evidence_id": eid}
 
 def open_case(c, cid, **k):
@@ -721,6 +738,41 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
     if material:
         flag_reeval(c, cid, "timeline", "new evidence: %s" % kind)
     return eid
+
+# ---------------------------------------------------------------- agent run log
+def _ensure_runs(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS agent_run (
+        run_id TEXT PRIMARY KEY, case_id TEXT, intake_id TEXT, agent TEXT NOT NULL,
+        started_at TEXT NOT NULL, finished_at TEXT, turns INTEGER, tool_calls INTEGER,
+        tokens_in INTEGER, tokens_out INTEGER, outcome TEXT, transcript TEXT)""")
+
+def record_agent_run(c, agent, transcript, outcome, case_id=None, intake_id=None,
+                     started_at=None, turns=0, tool_calls=0, tokens_in=0, tokens_out=0):
+    _ensure_runs(c)
+    rid = uid()
+    c.execute("""INSERT INTO agent_run(run_id,case_id,intake_id,agent,started_at,finished_at,
+                 turns,tool_calls,tokens_in,tokens_out,outcome,transcript)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (rid, case_id, intake_id, agent, started_at or now(), now(),
+               turns, tool_calls, tokens_in, tokens_out, outcome, jd(transcript)))
+    c.commit()
+    return rid
+
+def list_agent_runs(c, case_id=None):
+    _ensure_runs(c)
+    q, args = "SELECT * FROM agent_run", ()
+    if case_id:
+        q, args = q + " WHERE case_id=?", (case_id,)
+    out = []
+    for r in rows(c, q + " ORDER BY started_at DESC LIMIT 50", args):
+        out.append({**r, "transcript": jl(r["transcript"])})
+    return out
+
+def llm_metrics(c):
+    _ensure_runs(c)
+    r = one(c, "SELECT COUNT(*) n, COALESCE(SUM(tokens_in),0) ti, COALESCE(SUM(tokens_out),0) tou, "
+               "SUM(CASE WHEN outcome LIKE 'fell_back%' THEN 1 ELSE 0 END) fb FROM agent_run")
+    return {"llm_runs": r["n"], "llm_tokens_in": r["ti"], "llm_tokens_out": r["tou"], "llm_fallbacks": r["fb"] or 0}
 
 # ---------------------------------------------------------------- advocate pair
 # Not journey agents: an optional analysis pair. Each writes the strongest honest
@@ -903,6 +955,10 @@ def _match_case(c, payload):
 
 def _attach_intake(c, item, cid, how, by):
     """Land a triaged item on its case and run the journey (A0 -> A1 -> A2)."""
+    with case_lock(cid):
+        return _attach_intake_locked(c, item, cid, how, by)
+
+def _attach_intake_locked(c, item, cid, how, by):
     payload = jl(item["payload"])
     if not item.get("kind"):                      # classify late-arriving unclassified items
         item = {**item, "kind": _classify_intake(payload)}

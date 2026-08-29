@@ -40,12 +40,23 @@ def metrics():
     c = db()
     try:
         g = lambda sql: c.execute(sql).fetchone()[0]
-        return {
+        out = {
             "cases": g("SELECT COUNT(*) FROM dispute_case"),
             "actions_done": g("SELECT COUNT(*) FROM case_action WHERE status='done'"),
             "actions_compensated": g("SELECT COUNT(*) FROM case_action WHERE status='compensated'"),
             "audit_entries": g("SELECT COUNT(*) FROM audit_entry"),
         }
+        out.update(service.llm_metrics(c))
+        return out
+    finally:
+        c.close()
+
+
+@app.get("/api/agent-runs")
+def agent_runs(case_id: str = None):
+    c = db()
+    try:
+        return service.list_agent_runs(c, case_id)
     finally:
         c.close()
 
@@ -290,9 +301,25 @@ def ingest(payload: dict = Body(...)):
     queues the rest for a person."""
     c = db()
     try:
-        return service.triage_intake(c, payload.get("fields") or {}, kind=payload.get("kind"),
-                                     supplied_by=payload.get("supplied_by", "merchant"),
-                                     source_system=payload.get("source_system", "intake_feed"))
+        r = service.triage_intake(c, payload.get("fields") or {}, kind=payload.get("kind"),
+                                  supplied_by=payload.get("supplied_by", "merchant"),
+                                  source_system=payload.get("source_system", "intake_feed"))
+        # LLM-first autonomy: when deterministic triage queues an item and the LLM
+        # is on, the A0 agent takes over automatically. Any failure leaves the item
+        # in the human queue — fail closed.
+        if (r.get("status") == "pending" and os.environ.get("CARD_DISPUTE_LLM") == "1"
+                and payload.get("auto_agent", True)):
+            try:
+                import agent
+                agent.run_triage_agent(c, r["intake_id"])
+                item = service.intake_get(c, r["intake_id"])
+                r = {"intake_id": item["intake_id"], "status": item["status"],
+                     "case_id": item["matched_case"] if item["status"] == "attached" else None,
+                     "suggested_case": item["matched_case"] if item["status"] == "pending" else None,
+                     "reason": item["match_reason"], "a0_llm": True}
+            except Exception as e:
+                logging.getLogger("card_dispute").warning("A0 llm failed; item stays queued: %s", e)
+        return r
     finally:
         c.close()
 
@@ -397,6 +424,33 @@ def reset():
 os.makedirs(os.path.join(HERE, "uploads"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=os.path.join(HERE, "uploads")), name="uploads")
 app.mount("/", StaticFiles(directory=os.path.join(HERE, "static"), html=True), name="ui")
+
+def _worker():
+    """Optional sweeper (CARD_DISPUTE_WORKER=1): retries A0 on intake items that
+    have sat pending for two minutes — recovery for missed or failed triage."""
+    import time
+    while True:
+        time.sleep(60)
+        if os.environ.get("CARD_DISPUTE_LLM") != "1":
+            continue
+        try:
+            import datetime as dt
+            cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)).replace(microsecond=0).isoformat()
+            c = db()
+            try:
+                import agent
+                for item in service.list_intake(c):
+                    if item["received_at"] < cutoff:
+                        agent.run_triage_agent(c, item["intake_id"])
+            finally:
+                c.close()
+        except Exception as e:
+            logging.getLogger("card_dispute").warning("worker sweep failed: %s", e)
+
+
+if os.environ.get("CARD_DISPUTE_WORKER") == "1":
+    import threading
+    threading.Thread(target=_worker, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn

@@ -10,7 +10,7 @@ metadata:
   writes: [upsert_evidence, open_gap, log_audit]
   writes_external: false
   needs_approval: false
-allowed-tools: list_evidence, upsert_evidence, open_gap, log_audit
+allowed-tools: list_evidence, upsert_evidence, open_gap, mark_duplicates, log_audit
 ---
 
 # Duplicate detection

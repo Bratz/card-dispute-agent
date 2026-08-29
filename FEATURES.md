@@ -157,6 +157,19 @@ the reason-code rules. The planner chooses dynamically *among permitted actions*
 - **A server-verified attach for the LLM path** — A0's attach tool re-runs the
   deterministic matcher and refuses unless a certain key links the item to the
   case, so a wrong guess cannot reach the wrong dispute.
+- **Enforced tool whitelists** — each agent's LLM tools come from its skill
+  files' `allowed-tools` and are enforced at execution, not just documented.
+- **Contracts checked in code, with a deterministic floor** — an agent that
+  leaves its stage unfinished gets one nudge; then the deterministic engine
+  finishes it, and the fallback is on the audit trail.
+- **Autonomous triage** — a queued intake item is picked up by the A0 agent
+  automatically when the LLM is on; failures fail closed to the human queue.
+- **Every LLM run on the record** — transcript, tool calls, turns and tokens in
+  the `agent_run` table; totals in `/metrics`; a live eval harness (`eval.py`)
+  measures completion and injection-resistance rates repeatably.
+- **Model fallback chain and per-case serialization** — a failing model falls
+  through to the next; concurrent work on one case is serialized; the database
+  runs in WAL mode.
 
 ### How partial-failure recovery works
 

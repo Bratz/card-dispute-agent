@@ -236,6 +236,84 @@ def main():
     assert b and "brief A" in b["cardholder"] and "brief B" in b["merchant"]
     assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
 
+    # ---- LLM-first machinery, tested offline with a fake model ----
+    from types import SimpleNamespace as NS
+
+    def blk_text(t): return NS(type="text", text=t)
+    def blk_tool(name, inp): return NS(type="tool_use", name=name, input=inp, id=s.uid())
+    def resp(blocks, stop): return NS(content=blocks, stop_reason=stop,
+                                      usage=NS(input_tokens=10, output_tokens=5))
+
+    class FakeClient:
+        def __init__(self, script): self.script=list(script); self.messages=NS(create=self._create)
+        def _create(self, **kw):
+            item=self.script.pop(0)
+            if isinstance(item, Exception): raise item
+            return item
+
+    sk_all = agent.load_skills()
+    # 1) whitelists are derived from the skill files and differ per agent
+    a1t, a2t = agent.agent_tools("A1", sk_all), agent.agent_tools("A2", sk_all)
+    assert "propose_action" not in a1t and "rebuild_timeline" in a1t
+    assert "propose_action" in a2t and "get_action_scores" in a2t and "rebuild_timeline" not in a2t
+
+    # 2) nudge + enforcement + postcondition + persisted run (A2 on a fresh case)
+    r = s.raise_dispute(c, {"customer_id": "CUST-F1", "card_token": "tok_f1", "txn_id": "TXN-F1",
+                            "amount": 80, "reason_code": "13.3"}, "user1")
+    cidf = r["case_id"]
+    c.execute("DELETE FROM case_action WHERE case_id=?", (cidf,))  # clear so the postcondition starts unmet
+    c.commit()
+    agent.CLIENT_FACTORY = lambda: FakeClient([
+        resp([blk_text("done (but it is not)")], "end_turn"),                       # -> nudge
+        resp([blk_tool("rebuild_timeline", {}),                                     # not permitted for A2
+              blk_tool("propose_action", {"atype": "request_evidence",
+                                          "summary": "fake proposes", "purpose": "fake-1"})], "tool_use"),
+        resp([blk_text("proposed")], "end_turn"),
+    ])
+    tr = agent.run_agent(c, cidf, "A2")
+    assert any("nudge" in t for t in tr), tr
+    assert s.pending_action(c, cidf), "postcondition should now hold"
+    runs = s.list_agent_runs(c, cidf)
+    assert runs and runs[0]["outcome"] == "complete" and runs[0]["tokens_out"] > 0
+    # the disallowed call was refused, not executed: no timeline was built on this case
+    assert s.timeline_version(c, cidf) == 0
+
+    # 3) full fallback: a model that never acts -> the deterministic engine finishes
+    r = s.raise_dispute(c, {"customer_id": "CUST-F2", "card_token": "tok_f2", "txn_id": "TXN-F2",
+                            "amount": 60, "reason_code": "13.3"}, "user1")
+    cidg = r["case_id"]
+    c.execute("DELETE FROM case_action WHERE case_id=?", (cidg,)); c.commit()
+    agent.CLIENT_FACTORY = lambda: FakeClient([resp([blk_text("nope")], "end_turn")] * 8)
+    agent.run_journey_llm(c, cidg)
+    assert agent.POSTCONDITIONS["A1"](c, cidg)                    # A1 contract holds (nothing to rebuild)
+    assert s.pending_action(c, cidg)                              # A2 stage finished deterministically
+    assert any(a["event"] == "agent.fell_back" for a in s.get_audit(c, cidg))
+    assert any(x["outcome"] == "fell_back:A2" for x in s.list_agent_runs(c, cidg))
+
+    # 4) model chain: first model fails, the second answers
+    import os as _os
+    _os.environ["CARD_DISPUTE_MODELS"] = "model-a,model-b"
+    calls = []
+    class ChainClient:
+        def __init__(self): self.messages=NS(create=self._create)
+        def _create(self, model=None, **kw):
+            calls.append(model)
+            if model == "model-a": raise RuntimeError("down")
+            return resp([blk_text("ok")], "end_turn")
+    out = agent._create(ChainClient(), max_tokens=10, system="x", tools=[], messages=[])
+    assert calls == ["model-a", "model-b"] and out.stop_reason == "end_turn"
+    del _os.environ["CARD_DISPUTE_MODELS"]
+    agent.CLIENT_FACTORY = None
+
+    # 5) the scorer tool surface + metrics
+    sc = agent._execute(c, cid, sk_all, "get_action_scores", {})
+    assert "candidates" in sc and "blocked" in sc
+    m = s.llm_metrics(c)
+    assert m["llm_runs"] >= 3 and m["llm_fallbacks"] >= 1
+    # 6) WAL is on
+    assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert s.case_lock(cid) is s.case_lock(cid)
+
     # ---- audit is append-only and complete ----
     assert count(c, "SELECT COUNT(*) FROM audit_entry WHERE case_id=?", (cid,)) >= 12
     c.commit()

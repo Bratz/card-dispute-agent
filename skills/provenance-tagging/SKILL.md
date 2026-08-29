@@ -10,7 +10,7 @@ metadata:
   writes: [upsert_evidence, log_audit]
   writes_external: false
   needs_approval: false
-allowed-tools: list_evidence, upsert_evidence, log_audit
+allowed-tools: list_evidence, upsert_evidence, calibrate_provenance, log_audit
 ---
 
 # Provenance tagging

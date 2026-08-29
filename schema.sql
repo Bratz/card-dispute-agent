@@ -137,6 +137,13 @@ CREATE TABLE intake_item (
   resolved_by TEXT, resolved_at TEXT
 );
 
+-- Every LLM agent run, persisted: transcript, tool calls, tokens, outcome.
+CREATE TABLE agent_run (
+  run_id TEXT PRIMARY KEY, case_id TEXT, intake_id TEXT, agent TEXT NOT NULL,
+  started_at TEXT NOT NULL, finished_at TEXT, turns INTEGER, tool_calls INTEGER,
+  tokens_in INTEGER, tokens_out INTEGER, outcome TEXT, transcript TEXT
+);
+
 -- Runtime configuration edited from the Administration screen (reason-code
 -- rules, approval policy). Values are JSON.
 CREATE TABLE app_config (

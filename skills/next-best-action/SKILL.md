@@ -10,7 +10,7 @@ metadata:
   writes: [propose_action, request_approval, request_intervention, log_audit]
   writes_external: false
   needs_approval: false
-allowed-tools: get_case, list_gaps, list_deadlines, list_hypotheses, get_audit, propose_action, request_approval, request_intervention, log_audit
+allowed-tools: get_case, list_gaps, list_deadlines, list_hypotheses, get_audit, get_action_scores, propose_action, request_approval, request_intervention, log_audit
 ---
 
 # Next best action
@@ -25,7 +25,11 @@ case.
 2. **Build the candidate steps**, restricted to the permitted-action set from
    `chargeback-rules` at the current stage: request a specific missing evidence
    item; raise a chargeback; submit a representment; escalate to a human; or wait.
-3. **Rank them** by:
+3. **Consult the scores.** Call `get_action_scores` — it returns each permitted
+   candidate with its success probability, score and what is blocked and why.
+   Use it as your expected-value input; you may depart from the top score only
+   with a reason you state.
+4. **Rank them** by:
    - **expected value** — does it close the top open `Gap` or decide between the
      leading hypotheses?
    - **deadline urgency** — from `deadline-tracking`.

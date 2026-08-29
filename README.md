@@ -224,6 +224,31 @@ button on an intake item) triages a cold item with the LLM reading the
 certain key really links the item to that case, so even a wrong guess cannot put
 evidence on the wrong dispute. Anything refused goes to the human queue.
 
+### LLM-first engineering
+
+The agents are the brain; the substrate is the guarantee; the deterministic
+engine is the always-on floor. Concretely:
+
+- **Enforced tool whitelists** — each agent's LLM tools are derived from its
+  skill files' `allowed-tools` and enforced at execution; a call outside the
+  whitelist is refused.
+- **Contracts checked in code** — after a run, code verifies the agent left the
+  case right (A1: reconciled; A2: proposed or escalated; A0: attached or
+  queued). One nudge retry, then the **deterministic engine finishes the stage**
+  and the fallback is on the audit trail. An LLM failure degrades to a working
+  system, never a broken one.
+- **Autonomous triage** — when deterministic matching queues an item and the
+  LLM is on, A0 runs by itself; failures fail closed to the human queue. An
+  optional sweeper (`CARD_DISPUTE_WORKER=1`) retries stragglers.
+- **Every run persisted** — transcripts, tool calls, turns and token counts in
+  the `agent_run` table (`GET /api/agent-runs`); totals in `/metrics`.
+- **Model chain with timeouts** — `CARD_DISPUTE_MODELS` lists fallback models,
+  tried in order.
+- **Repeatable evaluation** — `python eval.py` runs the live scenarios
+  (strong-key attach, embedded-instruction injection, planner completion) N
+  times and reports rates; the loop machinery itself (whitelists, nudges,
+  fallback, persistence) is tested offline in CI with a scripted fake model.
+
 ## Data & security
 
 - **Synthetic data only.** No real cardholder or transaction data is used or
