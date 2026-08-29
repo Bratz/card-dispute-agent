@@ -509,15 +509,15 @@ def conflict_detection(c, cid):
             for g in list_gaps(c, cid, open_only=True):
                 if g["kind"] == "missing" and jl(g["about"]).get("required") == req:
                     resolve_gap(c, g["gap_id"])
-    # stale: an active item far older than the newest evidence on the case
-    act = list_evidence(c, cid)
-    eff = [(e["effective_at"] or e["received_at"]) for e in act]
-    if eff:
-        newest = max(eff)[:10]
-        for e in act:
-            t = (e["effective_at"] or e["received_at"])[:10]
+    # stale: a DATED item far older than the newest dated evidence on the case.
+    # Items without an event date are skipped - arrival time says nothing about
+    # when the underlying event happened.
+    dated = [e for e in list_evidence(c, cid) if e["effective_at"]]
+    if dated:
+        newest = max(e["effective_at"] for e in dated)[:10]
+        for e in dated:
             try:
-                age = (datetime.date.fromisoformat(newest) - datetime.date.fromisoformat(t)).days
+                age = (datetime.date.fromisoformat(newest) - datetime.date.fromisoformat(e["effective_at"][:10])).days
             except ValueError:
                 continue
             if age > 30:
@@ -694,7 +694,7 @@ def add_evidence(c, cid, kind, fields, supplied_by="analyst", image_name=None, i
                  "switch": "authoritative"}.get(supplied_by, "second_party")
     eid = assemble_evidence(c, cid, kind, assertion, payload,
                             {"system": "dispute_portal", "authority": authority, "supplied_by": supplied_by},
-                            payload.get("effective_at") or now())
+                            payload.get("effective_at") or None)
     run_journey(c, cid)             # re-reconcile with the new evidence
     c.commit()
     return {"evidence_id": eid}
@@ -796,7 +796,7 @@ def _attach_intake(c, item, cid, how, by):
     eid = assemble_evidence(c, cid, item["kind"], assertion, payload,
                             {"system": item["source_system"] or "intake", "authority": authority,
                              "supplied_by": supplied},
-                            payload.get("effective_at") or payload.get("delivered_at") or now())
+                            payload.get("effective_at") or payload.get("delivered_at") or None)
     c.execute("UPDATE intake_item SET status='attached', matched_case=?, match_reason=?, resolved_by=?, resolved_at=? WHERE intake_id=?",
               (cid, how, by, now(), item["intake_id"]))
     log_audit(c, cid, "A0 Intake Triage", "evidence.attached", "%s — %s" % (item["kind"], how))
