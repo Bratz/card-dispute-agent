@@ -44,6 +44,12 @@ def init_db(path=DB_PATH, reset=False):
         with open(SCHEMA, encoding="utf-8") as f:
             c.executescript(f.read())
         c.commit()
+    else:  # tiny defensive migration for databases created before work queues
+        try:
+            c.execute("SELECT assigned_to FROM dispute_case LIMIT 1")
+        except sqlite3.OperationalError:
+            c.execute("ALTER TABLE dispute_case ADD COLUMN assigned_to TEXT")
+            c.commit()
     return c
 
 def rows(c, sql, args=()):
@@ -355,10 +361,15 @@ def approve_action(c, aid, user_key="lead"):
                 % (a["type"], needed.replace("_", " "), user["name"], user["role"])}
     if a["status"] in ("done", "compensated"):
         return {"note": "already actioned — runs once"}
+    # atomic proposed -> approved: one sign-off is enough, a second is a no-op
+    cur = c.execute("UPDATE case_action SET status='approved' WHERE action_id=? AND status='proposed'", (aid,))
+    if cur.rowcount == 0:
+        prior = one(c, "SELECT approver_id FROM approval WHERE action_id=? AND decision='approve'", (aid,))
+        return {"note": "already approved%s — one sign-off is enough" % (" by " + prior["approver_id"] if prior else "")}
     apid = uid()
     c.execute("INSERT INTO approval(approval_id,case_id,action_id,decision,approver_role,approver_id,decided_at) VALUES(?,?,?,?,?,?,?)",
               (apid, a["case_id"], aid, "approve", user["role"], user["name"], now()))
-    c.execute("UPDATE case_action SET status='approved', approval_id=? WHERE action_id=?", (apid, aid))
+    c.execute("UPDATE case_action SET approval_id=? WHERE action_id=?", (apid, aid))
     log_audit(c, a["case_id"], "approval", "action.approved", "%s by %s (%s)" % (a["type"], user["name"], user["role"]))
     return {"approval_id": apid, "approved_by": user["name"]}
 
@@ -711,6 +722,59 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
         flag_reeval(c, cid, "timeline", "new evidence: %s" % kind)
     return eid
 
+# ---------------------------------------------------------------- work queues
+def claim_case(c, cid, user_key):
+    """Atomic claim: first come, first served; a claimed case stays claimed."""
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
+    cur = c.execute("UPDATE dispute_case SET assigned_to=?, updated_at=? WHERE case_id=? AND assigned_to IS NULL AND status='active'",
+                    (user_key, now(), cid))
+    if cur.rowcount == 0:
+        case = get_case(c, cid)
+        owner = USERS.get(case["assigned_to"], {}).get("name") if case and case["assigned_to"] else None
+        return {"error": "already claimed by %s" % owner if owner else "case cannot be claimed"}
+    log_audit(c, cid, user["name"], "case.claimed", "took the case from the queue")
+    c.commit()
+    return {"status": "claimed", "by": user["name"]}
+
+def assign_case(c, cid, assignee, user_key):
+    """Reassignment is the Team Lead's call."""
+    user = USERS.get(user_key)
+    if not user or user["role"] != "team_lead":
+        return {"error": "only the Team Lead can reassign a case"}
+    if assignee not in USERS:
+        return {"error": "unknown assignee"}
+    if not get_case(c, cid):
+        return {"error": "no such case"}
+    c.execute("UPDATE dispute_case SET assigned_to=?, updated_at=? WHERE case_id=?", (assignee, now(), cid))
+    log_audit(c, cid, user["name"], "case.assigned", "assigned to %s" % USERS[assignee]["name"])
+    c.commit()
+    return {"status": "assigned", "to": USERS[assignee]["name"]}
+
+def workload(c):
+    """Open-case counts per person, and how many sit unassigned."""
+    counts = {k: 0 for k in USERS}
+    for r in rows(c, "SELECT assigned_to, COUNT(*) n FROM dispute_case WHERE status='active' GROUP BY assigned_to"):
+        if r["assigned_to"] in counts:
+            counts[r["assigned_to"]] = r["n"]
+    un = one(c, "SELECT COUNT(*) n FROM dispute_case WHERE status='active' AND assigned_to IS NULL")
+    return {"counts": {USERS[k]["name"]: v for k, v in counts.items()}, "unassigned": un["n"]}
+
+def claim_next(c, user_key):
+    """Pull-based balancing: take the most urgent unassigned case (fewest days
+    left on its window, oldest first). Atomic per attempt, so two people pressing
+    the button at once get two different cases."""
+    candidates = sorted(
+        rows(c, "SELECT case_id, opened_at FROM dispute_case WHERE status='active' AND assigned_to IS NULL"),
+        key=lambda r: (_days_left(c, r["case_id"]), r["opened_at"]))
+    for cand in candidates:
+        r = claim_case(c, cand["case_id"], user_key)
+        if r.get("status") == "claimed":
+            r["case_id"] = cand["case_id"]
+            return r
+    return {"error": "nothing unassigned to take"}
+
 def raise_dispute(c, f, user_key):
     """Journey step 1, live: a person raises a new dispute; the journey starts."""
     user = USERS.get(user_key)
@@ -944,6 +1008,9 @@ def seed(c):
                      VALUES(?,?,?,?,?,?,?,?,?,?)""",
                   (xid, who, "tok_" + xid[-4:], "TXN-" + xid[-4:], rc, amt, "USD", stg, now(), now()))
         propose_action(c, xid, "request_evidence" if rc != "10.4" else "raise_chargeback", {"summary": summ}, "seed")
+    # one case with the window nearly closed, so urgency ordering has something to show
+    due_soon = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).date().isoformat()
+    set_deadline(c, "DSP-100198", "representment_window", due_soon)
     c.commit()
 
 def inject_late_evidence(c, cid):

@@ -220,4 +220,14 @@ unchanged.
   changed afterward.
 - **Human triage queue** — items the matcher will not attach wait for a person,
   with the agent's best suggestion; anything unclear escalates rather than guesses.
+- **Work queues with ownership** — a case can be **claimed** (atomic: first come,
+  first served; a second claim is refused with the owner's name) and **reassigned
+  by the Team Lead only**. The queue offers All / My queue / Unassigned views.
+- **Urgency-ordered queue** — cases are listed with the days left on their
+  representment window, most urgent first, not just oldest first.
+- **Pull-based balancing** — "Take next case" claims the most urgent unassigned
+  case for whoever presses it; a workload line shows open cases per person and
+  how many sit unassigned. Two people pressing at once get two different cases.
+- **One sign-off is enough** — approving an already-approved action is a no-op
+  with a plain message, so a simultaneous double-approval cannot record twice.
 - **Observability** — `/health`, `/metrics` and structured JSON logs.

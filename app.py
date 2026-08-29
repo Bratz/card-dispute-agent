@@ -71,9 +71,53 @@ def cases():
                 "case_id": cid, "customer_id": case["customer_id"], "amount": case["amount"],
                 "currency": case["currency"], "reason": case["reason_code"], "reason_text": rule["text"],
                 "stage": case["stage"], "status": case["status"], "conflict": conflict,
+                "assigned_to": case["assigned_to"],
+                "assigned_name": service.USERS.get(case["assigned_to"], {}).get("name") if case["assigned_to"] else None,
+                "days_left": service._days_left(c, cid),
                 "recommended": service.jl(action["params"]).get("summary") if action else None,
             })
+        # most urgent first: fewest days left on the window, then oldest case
+        out.sort(key=lambda x: (x["days_left"], x["case_id"]))
         return out
+    finally:
+        c.close()
+
+
+@app.get("/api/workload")
+def workload_ep():
+    c = db()
+    try:
+        return service.workload(c)
+    finally:
+        c.close()
+
+
+@app.post("/api/cases/{cid}/claim")
+def claim(cid: str, x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.claim_case(c, cid, x_user)
+        return JSONResponse(r, status_code=409) if r.get("error") else r
+    finally:
+        c.close()
+
+
+@app.post("/api/cases/claim-next")
+def claim_next_ep(x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.claim_next(c, x_user)
+        return JSONResponse(r, status_code=404) if r.get("error") else r
+    finally:
+        c.close()
+
+
+@app.post("/api/cases/{cid}/assign")
+def assign(cid: str, assignee: str = Body(..., embed=True), x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.assign_case(c, cid, assignee, x_user)
+        return JSONResponse(r, status_code=403) if r.get("error") else r
     finally:
         c.close()
 

@@ -191,6 +191,25 @@ def main():
     assert item["assertion_type"] == "user_input"                   # customer-supplied
     assert s.add_evidence(c, cid, "not_a_kind", {}).get("error")    # unknown kind refused
 
+    # ---- work queues: atomic claim, lead-only reassign, take-next, one sign-off ----
+    r = s.claim_case(c, cid, "user1")
+    assert r.get("status") == "claimed" and r["by"] == "User 1", r
+    assert "already claimed by User 1" in s.claim_case(c, cid, "user2").get("error", "")   # atomic
+    assert s.assign_case(c, cid, "user2", "user1").get("error")                            # analyst refused
+    assert s.assign_case(c, cid, "user2", "lead").get("status") == "assigned"              # lead reassigns
+    assert s.get_case(c, cid)["assigned_to"] == "user2"
+    w = s.workload(c)
+    assert w["counts"]["User 2"] >= 1 and "unassigned" in w
+    # take-next pulls the most urgent unassigned case (the one with 2 days left)
+    r = s.claim_next(c, "user1")
+    assert r.get("status") == "claimed" and r["case_id"] == "DSP-100198", r
+    # a second approval of the same action is a no-op, not a second record
+    aidq = s.propose_action(c, cid, "request_evidence", {"summary": "queue sign-off"}, "test-queue")
+    assert s.approve_action(c, aidq, "user1").get("approval_id")
+    r = s.approve_action(c, aidq, "user2")
+    assert "one sign-off is enough" in r.get("note", ""), r
+    assert count(c, "SELECT COUNT(*) FROM approval WHERE action_id=?", (aidq,)) == 1
+
     # ---- decision is human-owned; liability was never set by the journey ----
     assert s.get_case(c, cid)["liability_outcome"] is None
     s.record_decision(c, cid, "Merchant favour", user_key="user1")

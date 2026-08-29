@@ -14,6 +14,7 @@ CREATE TABLE dispute_case (
     CHECK (stage IN ('raised','gathering','reconstructed','interpreting','awaiting_approval','actioned','resolved','withdrawn')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','on_hold','closed')),
   liability_outcome TEXT,                -- human-only; set by the decision path
+  assigned_to TEXT,                      -- work-queue ownership (user key), null = unassigned
   version INTEGER NOT NULL DEFAULT 1,
   opened_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );

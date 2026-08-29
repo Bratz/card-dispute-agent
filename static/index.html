@@ -69,7 +69,14 @@
       <button class="btn pri" id="rd-go">Raise</button>
     </div></div></div></div>
   <div id="intakepanel"></div>
-  <div class="panel"><header><h2>Case Queue</h2><span class="x" id="qn"></span></header>
+  <div class="panel"><header><h2>Case Queue</h2>
+    <span style="display:flex;gap:4px;margin-left:10px">
+      <button class="btn sm" data-qf="all">All</button>
+      <button class="btn sm" data-qf="mine">My queue</button>
+      <button class="btn sm" data-qf="unassigned">Unassigned</button>
+    </span>
+    <button class="btn sm pri" id="takenext" style="margin-left:8px">Take next case</button>
+    <span class="x" id="qn"></span></header>
     <div class="body" style="padding:0"><table id="queue"></table></div></div>
   <div id="workspace"></div>
 </div>
@@ -154,14 +161,18 @@ async function loadIntake(){
     toast(r.error||(r.item.status==="attached"?("A0 attached it to "+r.item.matched_case):("A0 held it: "+(r.item.match_reason||"needs a person"))));
     loadQueue();if(current)loadCase(current);});
 }
+let qf="all";
 async function loadQueue(){
   loadIntake();
-  const [cases,m]=await Promise.all([get("/api/cases"),get("/metrics")]);
-  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.actions_compensated} compensated · ${m.audit_entries} audit`;
-  $("qn").textContent=cases.length+" cases";
-  $("queue").innerHTML="<thead><tr><th>Dispute</th><th>Cardholder</th><th>Amount</th><th>Reason</th><th>Stage</th><th>Recommended</th></tr></thead><tbody>"+
-    cases.map(c=>`<tr class="row" data-id="${c.case_id}"><td class="mono">${c.case_id}</td><td>${esc(c.customer_id)}</td><td class="num">${money(c.amount,c.currency)}</td><td>${c.reason} · ${esc(c.reason_text)}</td><td><span class="badge ${c.stage==='resolved'?'':''}">${esc(c.stage)}</span>${c.conflict?' <span class="badge hi">conflict</span>':''}</td><td style="color:var(--muted)">${esc(c.recommended||"")}</td></tr>`).join("")+"</tbody>";
+  const [cases,m,w]=await Promise.all([get("/api/cases"),get("/metrics"),get("/api/workload")]);
+  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.audit_entries} audit · load: `+
+    Object.entries(w.counts).map(([n,v])=>`${n.split(" ")[0]} ${v}`).join(" · ")+` · unassigned ${w.unassigned}`;
+  const shown=cases.filter(c=>qf==="mine"?c.assigned_to===me():qf==="unassigned"?!c.assigned_to:true);
+  $("qn").textContent=shown.length+" of "+cases.length+" · most urgent first";
+  $("queue").innerHTML="<thead><tr><th>Dispute</th><th>Cardholder</th><th>Amount</th><th>Reason</th><th>Stage</th><th>Window</th><th>Assigned</th><th>Recommended</th></tr></thead><tbody>"+
+    shown.map(c=>`<tr class="row" data-id="${c.case_id}"><td class="mono">${c.case_id}</td><td>${esc(c.customer_id)}</td><td class="num">${money(c.amount,c.currency)}</td><td>${c.reason} · ${esc(c.reason_text)}</td><td><span class="badge">${esc(c.stage)}</span>${c.conflict?' <span class="badge hi">conflict</span>':''}</td><td class="num${c.days_left<7?'" style="color:var(--alert)':''}">${c.days_left}d</td><td>${esc(c.assigned_name||"—")}</td><td style="color:var(--muted)">${esc(c.recommended||"")}</td></tr>`).join("")+"</tbody>";
   $("queue").querySelectorAll("tr.row").forEach(r=>r.onclick=()=>loadCase(r.dataset.id));
+  document.querySelectorAll("[data-qf]").forEach(b=>{b.onclick=()=>{qf=b.dataset.qf;loadQueue();};b.style.borderColor=b.dataset.qf===qf?"var(--accent)":"";});
 }
 function positions(hyps){const lead=hyps.reduce((a,b)=>b.confidence>a.confidence?b:a,hyps[0]||{});
   return hyps.map(h=>`<div class="pos ${h===lead?'lead':''}"><div class="r"><span class="s">${esc(h.statement)}</span><span class="pc">${h.confidence}%</span></div><div class="track"><div class="fill" data-w="${h.confidence}"></div></div></div>`).join("");}
@@ -192,7 +203,11 @@ function render(v){
   $("workspace").innerHTML=`<h1>${c.case_id} — ${esc(c.customer_id)}</h1><p class="sub">${c.reason_code} · ${money(c.amount,c.currency)} · ${esc(c.stage)}</p>
     <div class="banner" id="banner"></div>
     <div class="two"><div>
-      <div class="panel" id="p-case"><header><h2>Case</h2></header><div class="body"><div class="kv"><dt>Cardholder</dt><dd class="mono">${esc(c.customer_id)}</dd><dt>Card</dt><dd><span class="chip tok">${esc(c.card_id)}</span></dd><dt>Amount</dt><dd>${money(c.amount,c.currency)}</dd><dt>Reason</dt><dd>${c.reason_code}</dd></div></div></div>
+      <div class="panel" id="p-case"><header><h2>Case</h2></header><div class="body"><div class="kv"><dt>Cardholder</dt><dd class="mono">${esc(c.customer_id)}</dd><dt>Card</dt><dd><span class="chip tok">${esc(c.card_id)}</span></dd><dt>Amount</dt><dd>${money(c.amount,c.currency)}</dd><dt>Reason</dt><dd>${c.reason_code}</dd>
+        <dt>Owner</dt><dd>${c.assigned_to?esc(({lead:"Team Lead",user1:"User 1",user2:"User 2"})[c.assigned_to]||c.assigned_to):'unassigned'}
+          ${!c.assigned_to?'<button class="btn sm" id="claimbtn" style="margin-left:8px">Claim</button>':''}
+          <select id="reassign" style="margin-left:8px"><option value="">reassign…</option><option value="lead">Team Lead</option><option value="user1">User 1</option><option value="user2">User 2</option></select>
+        </dd></div></div></div>
       <div class="panel" id="p-tl"><header><h2>Event timeline</h2><span class="x">v${v.timeline_version}${v.timeline_version>1?' · previous kept':''}</span></header><div class="body"><div class="tl">${tl}</div></div></div>
       <div class="panel" id="p-ev"><header><h2>Evidence</h2><span class="x">${v.evidence.length} items</span></header><div class="body">${ev}</div></div>
       <div class="panel" id="p-add"><header><h2>Add evidence</h2><span class="x">all seven kinds · photo optional</span></header><div class="body">
@@ -227,6 +242,10 @@ function render(v){
   const inj=$("inject"); if(inj) inj.onclick=doInject;
   const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
   const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
+  const cl=$("claimbtn"); if(cl) cl.onclick=async()=>{const r=await post(`/api/cases/${current}/claim`);toast(r.error||("Claimed by "+r.by+"."));loadQueue();loadCase(current);};
+  const rs=$("reassign"); if(rs) rs.onchange=async()=>{if(!rs.value)return;
+    const r=await postBody(`/api/cases/${current}/assign`,{assignee:rs.value});
+    toast(r.error||("Assigned to "+r.to+"."));loadQueue();loadCase(current);};
   const cr=$("correctbtn"); if(cr) cr.onclick=async()=>{
     const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
       fields:{carrier:"FastShip",tracking:"FS-99001",status:"delivered",signed_by:"J. Doe (neighbour)",
@@ -275,6 +294,10 @@ async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await 
 async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});if(v.error){toast(v.error);return;}render(v);toast("Liability recorded by "+(v.decided_by||me())+" — case closed.");loadQueue();}
 $("reset").onclick=async()=>{await post("/api/reset");current=null;$("workspace").innerHTML="";toast("Demo reset.");loadQueue();};
 $("rulesbtn").onclick=toggleRules;
+$("takenext").onclick=async()=>{
+  const r=await post("/api/cases/claim-next");
+  if(r.error){toast(r.error);return;}
+  toast("You took "+r.case_id+".");loadQueue();loadCase(r.case_id);};
 $("raisebtn").onclick=()=>{const p=$("raisepanel");p.style.display=p.style.display==="none"?"block":"none";};
 $("rd-go").onclick=async()=>{
   const r=await postBody("/api/cases",{customer_id:$("rd-cust").value,card_token:$("rd-card").value,
