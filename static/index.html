@@ -118,14 +118,29 @@ function render(v){
       <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
       <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
     </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><span class="note">Records a late, signed delivery record that contradicts the cardholder; the case reassesses itself.</span></div>`;
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">Inject a late delivery record, or run the same case through the no-code agents — they read the skill files and call the tools.</span></div>
+    <div id="transcript"></div>`;
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
+  const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
   document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
   document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
   document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));
 }
 async function doInject(){const v=await post(`/api/cases/${current}/inject`);render(v);["p-ev","p-tl","p-exc","p-pos","p-rec","p-aud"].forEach(id=>{const p=$(id);if(p){p.classList.remove("flash");void p.offsetWidth;p.classList.add("flash");}});const b=$("banner");if(b){b.innerHTML='<b>The late evidence updated the case.</b> The stronger position moved to the merchant, both positions stayed on file, every earlier version was kept, and liability is still an analyst decision.';b.classList.add("show");}toast("Merchant evidence recorded — case updated.");loadQueue();}
+async function doRunAgent(){
+  const btn=$("runagent"); if(btn){btn.textContent="Running the no-code agents…";btn.disabled=true;}
+  const v=await post(`/api/cases/${current}/run-agent`);
+  if(v.error){toast(v.error); if(btn){btn.textContent="Run no-code (LLM)";btn.disabled=false;} return;}
+  render(v); renderTranscript(v.agent_transcript); loadQueue(); toast("No-code agents finished.");
+}
+function renderTranscript(tr){
+  if(!tr) return; const box=$("transcript"); if(!box) return;
+  const rows=who=>(tr[who]||[]).map(s=> s.tool
+    ? `<div class="a"><span class="ac">${esc(s.tool)}</span><span>${esc(JSON.stringify(s.input||{}).slice(0,140))}</span></div>`
+    : `<div class="a"><span class="ac">final</span><span>${esc((s.final||"").slice(0,400))}</span></div>`).join("");
+  box.innerHTML=`<div class="panel"><header><h2>No-code agent transcript</h2><span class="x">skills read &amp; tools called</span></header><div class="body"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">A1 Evidence Reconciliation</div><div class="aud">${rows("A1")}</div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 0 4px">A2 Dispute Case Planner</div><div class="aud">${rows("A2")}</div></div></div>`;
+}
 async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.note||"Approved.");loadCase(current);}
 async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await post(`/api/actions/${aid}/execute?mode=${mode}`);
   toast(r.error?("Refused: "+r.error):(r.reconciled?"Reconciled — no second effect.":r.note?("Executing: "+r.note):("Action "+r.status+".")));loadCase(current);loadQueue();}
