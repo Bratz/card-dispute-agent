@@ -137,6 +137,30 @@ CREATE TABLE intake_item (
   resolved_by TEXT, resolved_at TEXT
 );
 
+-- The parties a dispute talks to, and the register of every ask made to them.
+-- channel 'pull' = internal read-only query; 'request' = external, approval-gated.
+CREATE TABLE party (
+  party_id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('pull','request')),
+  authority TEXT NOT NULL, sla_days INTEGER NOT NULL DEFAULT 7,
+  endpoint TEXT, serves_kinds TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE service_request (
+  request_id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES dispute_case(case_id),
+  party_id TEXT NOT NULL REFERENCES party(party_id),
+  kinds TEXT NOT NULL,                   -- JSON list of evidence kinds asked for
+  purpose TEXT,
+  status TEXT NOT NULL DEFAULT 'sent'
+    CHECK (status IN ('sent','chased','partially_fulfilled','fulfilled','expired')),
+  action_id TEXT,                        -- the approval-gated case_action (lane 2); null for pulls
+  sent_at TEXT NOT NULL, due_at TEXT NOT NULL,
+  fulfilled_at TEXT, fulfilled_by TEXT NOT NULL DEFAULT '[]',   -- [{evidence_id, kind}]
+  chase_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX sr_case ON service_request(case_id);
+
 -- Every LLM agent run, persisted: transcript, tool calls, tokens, outcome.
 CREATE TABLE agent_run (
   run_id TEXT PRIMARY KEY, case_id TEXT, intake_id TEXT, agent TEXT NOT NULL,

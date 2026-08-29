@@ -94,6 +94,21 @@ def cases():
         c.close()
 
 
+@app.get("/api/requests/outstanding")
+def outstanding_requests():
+    """Open asks across the book, by party — the ops chase list."""
+    c = db()
+    try:
+        service._ensure_register(c)
+        return service.rows(c, """SELECT p.name party, COUNT(*) open_requests,
+            SUM(CASE WHEN sr.due_at < ? AND sr.status IN ('sent','chased') THEN 1 ELSE 0 END) overdue
+            FROM service_request sr JOIN party p ON p.party_id = sr.party_id
+            WHERE sr.status IN ('sent','chased','partially_fulfilled')
+            GROUP BY p.name""", (service.now(),))
+    finally:
+        c.close()
+
+
 @app.get("/api/workload")
 def workload_ep():
     c = db()

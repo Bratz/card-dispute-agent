@@ -177,6 +177,7 @@ def upsert_evidence(c, cid, kind, assertion_type, payload, source=None, effectiv
               "evidence.corrected" if supersedes else "evidence.upsert",
               kind + (" — supersedes an earlier version, which is kept" if supersedes else ""),
               {"evidence_id": eid, "supersedes": supersedes})
+    match_fulfilment(c, cid, eid, kind, src.get("supplied_by"), supersedes=supersedes)
     return eid
 
 def rebuild_timeline(c, cid):
@@ -416,6 +417,7 @@ def case_history(c, cid):
         "evidence": [{**e, "payload": jl(e["payload"])} for e in list_evidence(c, cid, active_only=False)],
         "timeline_versions": [{"version": v, "events": evs} for v, evs in sorted(versions.items())],
         "agent_runs": list_agent_runs(c, cid),
+        "requests": list_requests(c, cid),
         "audit": get_audit(c, cid),
     }
 
@@ -434,6 +436,19 @@ def _external_call(c, key, mode):
               (key, "failed", None, now()))
     return "fail"
 
+def _register_from_action(c, a):
+    """A sent lane-2 ask lands on the register; a chase updates its request."""
+    purpose = a["idempotency_key"].split(":", 2)[-1]
+    if purpose.startswith("chase:"):
+        apply_chase(c, a["case_id"], purpose.split(":", 1)[1])
+    elif a["type"] == "request_evidence":
+        if purpose.startswith("merchant-"):
+            register_request(c, a["case_id"], "merchant", [purpose.split("-", 1)[1]],
+                             jl(a["params"]).get("summary"), a["action_id"])
+        elif purpose == "cardholder-address":
+            register_request(c, a["case_id"], "cardholder", ["correspondence"],
+                             jl(a["params"]).get("summary"), a["action_id"])
+
 def execute_action(c, aid, mode="ok"):
     a = one(c, "SELECT * FROM case_action WHERE action_id=?", (aid,))
     if not a:
@@ -450,6 +465,7 @@ def execute_action(c, aid, mode="ok"):
         c.execute("UPDATE case_action SET status='done', external_ref=?, result=?, executed_at=? WHERE action_id=?",
                   (led["ref"], jd({"reconciled": True}), now(), aid))
         log_audit(c, a["case_id"], "orchestration", "action.reconciled", "external state was completed; no second effect")
+        _register_from_action(c, a)
         return {"status": "done", "reconciled": True, "external_ref": led["ref"]}
     c.execute("UPDATE case_action SET status='executing' WHERE action_id=?", (aid,))
     res = _external_call(c, key, mode)
@@ -458,6 +474,7 @@ def execute_action(c, aid, mode="ok"):
         c.execute("UPDATE case_action SET status='done', external_ref=?, result=?, executed_at=? WHERE action_id=?",
                   (led["ref"], jd({"ok": True}), now(), aid))
         log_audit(c, a["case_id"], "orchestration", "action.executed", a["type"])
+        _register_from_action(c, a)
         return {"status": "done", "external_ref": led["ref"]}
     if res == "timeout":
         log_audit(c, a["case_id"], "orchestration", "action.timeout", "uncertain — will reconcile on retry")
@@ -664,6 +681,12 @@ def score_candidates(c, cid):
                            "p_success": round(p, 3), "score": round(score, 4),
                            "urgency": urgency, "authority": authority, "features": f})
 
+    # chase candidates: an overdue external ask competes like any evidence request
+    for r in list_requests(c, cid):
+        if r["overdue"] and r["party_id"] != "cardholder" and r["chase_count"] < 2 and r["channel"] == "request":
+            consider("request_evidence",
+                     "Chase the %s: %s overdue" % (r["party_name"].lower(), "/".join(r["kinds"]).replace("_", " ")),
+                     "chase:" + r["request_id"])
     if contradiction:
         consider("request_evidence", "Ask the cardholder to confirm the delivery address and who signed",
                  "cardholder-address")
@@ -714,6 +737,132 @@ def next_best_action(c, cid):
               breakdown)
     return aid
 
+# ---------------------------------------------------------------- parties & the service-request register
+PARTY_SEED = [
+    ("cardholder", "Cardholder", "cardholder", "request", "first_party", 10, "dispute portal / questionnaire",
+     ["customer_statement", "correspondence"]),
+    ("merchant", "Merchant (via acquirer)", "merchant", "request", "second_party", 7, "network dispute platform",
+     ["delivery_record", "receipt", "merchant_record", "correspondence"]),
+    ("network", "Card network", "network", "request", "authoritative", 30, "scheme lifecycle messages",
+     ["correspondence"]),
+    ("switch", "Card switch / auth host", "switch", "pull", "authoritative", 0, "internal query",
+     ["transaction_event", "auth_event"]),
+    ("ledger", "Core banking ledger", "ledger", "pull", "authoritative", 0, "internal query",
+     ["transaction_event"]),
+    ("carrier", "Carrier", "carrier", "pull", "second_party", 3, "tracking API (when a key is held)",
+     ["delivery_record"]),
+]
+
+def _ensure_register(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS party (
+        party_id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, channel TEXT NOT NULL,
+        authority TEXT NOT NULL, sla_days INTEGER NOT NULL DEFAULT 7, endpoint TEXT,
+        serves_kinds TEXT NOT NULL DEFAULT '[]')""")
+    c.execute("""CREATE TABLE IF NOT EXISTS service_request (
+        request_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, party_id TEXT NOT NULL,
+        kinds TEXT NOT NULL, purpose TEXT, status TEXT NOT NULL DEFAULT 'sent',
+        action_id TEXT, sent_at TEXT NOT NULL, due_at TEXT NOT NULL,
+        fulfilled_at TEXT, fulfilled_by TEXT NOT NULL DEFAULT '[]', chase_count INTEGER NOT NULL DEFAULT 0)""")
+    if not one(c, "SELECT party_id FROM party LIMIT 1"):
+        for p in PARTY_SEED:
+            c.execute("INSERT INTO party VALUES(?,?,?,?,?,?,?,?)", p[:7] + (jd(p[7]),))
+
+def get_party(c, pid):
+    _ensure_register(c)
+    return one(c, "SELECT * FROM party WHERE party_id=?", (pid,))
+
+def list_parties(c):
+    _ensure_register(c)
+    return [{**p, "serves_kinds": jl(p["serves_kinds"])} for p in rows(c, "SELECT * FROM party")]
+
+def register_request(c, cid, party_id, kinds, purpose, action_id=None):
+    """One open ask per (case, party, kind). Re-asking returns the existing one."""
+    _ensure_register(c)
+    party = get_party(c, party_id)
+    if not party:
+        return None
+    for r in rows(c, "SELECT * FROM service_request WHERE case_id=? AND party_id=? AND status IN ('sent','chased','partially_fulfilled')", (cid, party_id)):
+        if set(jl(r["kinds"])) & set(kinds):
+            return r["request_id"]
+    rid = uid()
+    due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=party["sla_days"])).replace(microsecond=0).isoformat()
+    c.execute("""INSERT INTO service_request(request_id,case_id,party_id,kinds,purpose,status,action_id,sent_at,due_at)
+                 VALUES(?,?,?,?,?, 'sent', ?,?,?)""", (rid, cid, party_id, jd(kinds), purpose, action_id, now(), due))
+    log_audit(c, cid, "request-register", "request.sent",
+              "%s asked for %s (due in %dd)" % (party["name"], "/".join(kinds), party["sla_days"]))
+    return rid
+
+def list_requests(c, cid):
+    _ensure_register(c)
+    out = []
+    for r in rows(c, "SELECT sr.*, p.name party_name, p.channel FROM service_request sr JOIN party p ON p.party_id=sr.party_id WHERE case_id=? ORDER BY sent_at", (cid,)):
+        out.append({**r, "kinds": jl(r["kinds"]), "fulfilled_by": jl(r["fulfilled_by"]),
+                    "overdue": r["status"] in ("sent", "chased") and r["due_at"] < now()})
+    return out
+
+_SUPPLIER_PARTY = {"customer": ["cardholder"], "merchant": ["merchant"], "carrier": ["carrier"],
+                   "system pull": ["switch", "ledger"]}
+
+def match_fulfilment(c, cid, evidence_id, kind, supplied_by, supersedes=None):
+    """Link arriving evidence to the open ask it answers. A correction re-links;
+    it never reopens a request."""
+    _ensure_register(c)
+    if supersedes:      # correction: re-point any fulfilment at the new version
+        for r in rows(c, "SELECT * FROM service_request WHERE case_id=?", (cid,)):
+            fb = jl(r["fulfilled_by"])
+            if any(x["evidence_id"] == supersedes for x in fb):
+                fb = [dict(x, evidence_id=evidence_id) if x["evidence_id"] == supersedes else x for x in fb]
+                c.execute("UPDATE service_request SET fulfilled_by=? WHERE request_id=?", (jd(fb), r["request_id"]))
+                log_audit(c, cid, "request-register", "request.relinked",
+                          "fulfilment re-linked to the corrected %s" % kind)
+                return
+    candidates = rows(c, "SELECT * FROM service_request WHERE case_id=? AND status IN ('sent','chased','partially_fulfilled')", (cid,))
+    parties = _SUPPLIER_PARTY.get(supplied_by)
+    best = None
+    for r in candidates:
+        if kind not in jl(r["kinds"]):
+            continue
+        if parties and r["party_id"] in parties:
+            best = r; break
+        if best is None:
+            best = r                              # kind-only fallback (e.g. analyst keyed it in)
+    if not best:
+        return
+    fb = jl(best["fulfilled_by"]) + [{"evidence_id": evidence_id, "kind": kind}]
+    done_kinds = {x["kind"] for x in fb}
+    status = "fulfilled" if set(jl(best["kinds"])) <= done_kinds else "partially_fulfilled"
+    c.execute("UPDATE service_request SET fulfilled_by=?, status=?, fulfilled_at=? WHERE request_id=?",
+              (jd(fb), status, now(), best["request_id"]))
+    age = ""
+    log_audit(c, cid, "request-register", "request.fulfilled",
+              "%s from %s answered the open ask%s" % (kind, supplied_by, age))
+
+def apply_chase(c, cid, request_id):
+    r = one(c, "SELECT sr.*, p.sla_days FROM service_request sr JOIN party p ON p.party_id=sr.party_id WHERE request_id=?", (request_id,))
+    if not r or r["status"] not in ("sent", "chased"):
+        return
+    due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max(r["sla_days"], 1))).replace(microsecond=0).isoformat()
+    c.execute("UPDATE service_request SET status='chased', chase_count=chase_count+1, due_at=? WHERE request_id=?",
+              (due, request_id))
+    log_audit(c, cid, "request-register", "request.chased",
+              "reminder %d sent; new due date set" % (r["chase_count"] + 1))
+
+def review_requests(c, cid):
+    """Policy pass: an expired cardholder ask means the case proceeds on the
+    record; a merchant ask chased twice without answer escalates to a person."""
+    for r in list_requests(c, cid):
+        if not r["overdue"]:
+            continue
+        if r["party_id"] == "cardholder":
+            c.execute("UPDATE service_request SET status='expired' WHERE request_id=?", (r["request_id"],))
+            log_audit(c, cid, "request-register", "request.expired",
+                      "the cardholder did not respond within the window — proceeding on the record")
+        elif r["chase_count"] >= 2:
+            marker = "chase-escalation:" + r["request_id"]
+            if not any((a["reason"] or "").startswith(marker) for a in get_audit(c, cid)):
+                log_audit(c, cid, "system", "intervention.requested",
+                          marker + " — %s unresponsive after %d reminders" % (r["party_name"], r["chase_count"]))
+
 # ---------------------------------------------------------------- evidence acquisition (lane 1: auto-pull)
 # Two-lane acquisition: systems of record the bank can QUERY are pulled from
 # automatically (read-only, addressed by a key the case already holds, audited).
@@ -736,21 +885,32 @@ def _switch_lookup(case):
         ("auth_event", {"method": "3DS", "result": "frictionless"}),
     ]
 
+def _ledger_lookup(case):
+    """Mock core-banking-ledger connector: the posting record for the disputed amount."""
+    return [("transaction_event", {"posting": "settled", "settled_amount": case["amount"],
+                                   "currency": case["currency"], "ledger_ref": "PST-" + case["disputed_txn_id"][-5:]})]
+
+PULL_CONNECTORS = [("switch", "card_switch", _switch_lookup),
+                   ("ledger", "core_ledger", _ledger_lookup)]
+
 def acquire_evidence(c, cid):
     """Pull what the case needs from queryable systems of record — only kinds the
-    case does not already hold, only sources addressable by a key we hold."""
+    case does not already hold, only sources addressable by a key we hold. Every
+    pull is a registered ask that its own evidence fulfils."""
     case = get_case(c, cid)
-    have = {e["kind"] for e in list_evidence(c, cid)}
     pulled = []
-    for kind, payload in _switch_lookup(case):
-        if kind in have:
-            continue
-        assemble_evidence(c, cid, kind, "recorded_fact", payload,
-                          {"system": "card_switch", "authority": "authoritative", "supplied_by": "system pull"},
-                          payload.get("effective_at"))
-        log_audit(c, cid, "evidence-acquisition", "evidence.pulled",
-                  "%s pulled read-only from the card switch by transaction id" % kind)
-        pulled.append(kind)
+    for party_id, system, lookup in PULL_CONNECTORS:
+        have = {e["kind"] for e in list_evidence(c, cid)}
+        for kind, payload in lookup(case):
+            if kind in have:
+                continue
+            register_request(c, cid, party_id, [kind], "pull what the case lacks")
+            assemble_evidence(c, cid, kind, "recorded_fact", payload,
+                              {"system": system, "authority": "authoritative", "supplied_by": "system pull"},
+                              payload.get("effective_at"))
+            log_audit(c, cid, "evidence-acquisition", "evidence.pulled",
+                      "%s pulled read-only from %s by a key the case holds" % (kind, system))
+            pulled.append(kind)
     return pulled
 
 def run_journey(c, cid):
@@ -767,6 +927,7 @@ def run_journey(c, cid):
     # A2 Dispute Case Planner
     hypothesis_management(c, cid)
     deadline_tracking(c, cid)
+    review_requests(c, cid)         # expire cardholder asks; escalate exhausted chases
     next_best_action(c, cid)        # applies chargeback-rules
     agent_reason(c, cid)            # optional LLM narrative (off by default)
 
@@ -1258,4 +1419,5 @@ def case_view(c, cid):
         "audit": get_audit(c, cid),
         "liability": case["liability_outcome"],
         "briefs": get_briefs(c, cid),
+        "requests": list_requests(c, cid),
     }

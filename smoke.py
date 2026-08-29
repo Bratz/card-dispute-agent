@@ -38,6 +38,16 @@ def main():
     assert len(s.AGENTS) == 3 and sum(len(a["skills"]) for a in s.AGENTS.values()) == 10
     assert all(a["soul"] for a in s.AGENTS.values())
 
+    # ---- the service-request register: lane-2 ask gets a lifecycle ----
+    a_del = s.one(c, "SELECT * FROM case_action WHERE idempotency_key=?",
+                  (cid + ":request_evidence:merchant-delivery_record",))
+    assert s.approve_action(c, a_del["action_id"], "user1").get("approval_id")
+    assert s.execute_action(c, a_del["action_id"], mode="ok")["status"] == "done"
+    reqs = s.list_requests(c, cid)
+    mreq = next(r for r in reqs if r["party_id"] == "merchant")
+    assert mreq["status"] == "sent" and mreq["kinds"] == ["delivery_record"]
+    assert mreq["due_at"] > mreq["sent_at"]                      # merchant SLA applied
+
     # ---- the visible A1 -> A2 handoff ----
     assert any(a["event"] == "case.handoff" for a in v["audit"]), "no handoff event"
 
@@ -55,6 +65,10 @@ def main():
     assert any(g["kind"] == "contradiction" and g["status"] == "open" for g in v["gaps"])
     assert any(g["kind"] == "missing" and g["status"] == "resolved" for g in v["gaps"])
     assert v["recommended"] and "cardholder" in v["recommended"]["params"]["summary"].lower()
+    # the arriving delivery record fulfilled the open merchant ask, linked by id
+    mreq = next(r for r in s.list_requests(c, cid) if r["party_id"] == "merchant")
+    assert mreq["status"] == "fulfilled" and mreq["fulfilled_by"][0]["kind"] == "delivery_record"
+    fulfilled_eid = mreq["fulfilled_by"][0]["evidence_id"]
 
     # ---- idempotent action: execute twice -> runs once ----
     aid = s.propose_action(c, cid, "request_evidence", {"summary": "idem test"}, "test-idem")
@@ -95,6 +109,9 @@ def main():
     assert s.timeline_version(c, cid) >= 3                          # rebuilt again
     v = s.case_view(c, cid)
     assert any(a["event"] == "evidence.corrected" for a in v["audit"])
+    # the correction re-linked the fulfilment to the new version — no reopen
+    mreq = next(r for r in s.list_requests(c, cid) if r["party_id"] == "merchant")
+    assert mreq["status"] == "fulfilled" and mreq["fulfilled_by"][0]["evidence_id"] != fulfilled_eid
 
     # ---- journey step 1, live: raise a new dispute ----
     assert s.raise_dispute(c, {"customer_id": "x"}, "nobody").get("error")
@@ -112,6 +129,32 @@ def main():
     assert sum(1 for a in v2["audit"] if a["event"] == "evidence.pulled") == 2
     # and the seeded case was never double-pulled (its kinds were already present)
     assert not any(a["event"] == "evidence.pulled" for a in s.get_audit(c, cid))
+    # pulls are registered asks that fulfil instantly (party = switch)
+    r2q = s.list_requests(c, cid2)
+    pulls = [r for r in r2q if r["party_id"] == "switch"]
+    assert pulls and all(r["status"] == "fulfilled" and r["fulfilled_by"] for r in pulls), r2q
+
+    # ---- chase discipline: overdue merchant ask -> chase candidate -> escalate after 2 ----
+    rid = s.register_request(c, cid2, "merchant", ["correspondence"], "terms and itinerary")
+    c.execute("UPDATE service_request SET due_at='2020-01-01T00:00:00+00:00' WHERE request_id=?", (rid,))
+    cands, blocked, meta = s.score_candidates(c, cid2)
+    assert any(x["purpose"] == "chase:" + rid for x in cands), [x["purpose"] for x in cands]
+    s.apply_chase(c, cid2, rid)
+    r = s.one(c, "SELECT * FROM service_request WHERE request_id=?", (rid,))
+    assert r["status"] == "chased" and r["chase_count"] == 1 and r["due_at"] > "2025"
+    c.execute("UPDATE service_request SET due_at='2020-01-01T00:00:00+00:00', chase_count=2 WHERE request_id=?", (rid,))
+    s.review_requests(c, cid2)
+    esc = [a for a in s.get_audit(c, cid2) if (a["reason"] or "").startswith("chase-escalation:" + rid)]
+    assert len(esc) == 1
+    s.review_requests(c, cid2)                                     # guard: no duplicate escalation
+    assert len([a for a in s.get_audit(c, cid2) if (a["reason"] or "").startswith("chase-escalation:" + rid)]) == 1
+
+    # ---- cardholder non-response: expire and proceed on the record ----
+    rid2 = s.register_request(c, cid2, "cardholder", ["customer_statement"], "questionnaire")
+    c.execute("UPDATE service_request SET due_at='2020-01-01T00:00:00+00:00' WHERE request_id=?", (rid2,))
+    s.review_requests(c, cid2)
+    assert s.one(c, "SELECT status FROM service_request WHERE request_id=?", (rid2,))["status"] == "expired"
+    assert any("proceeding on the record" in (a["reason"] or "") for a in s.get_audit(c, cid2))
 
     # ---- A0 triage: weak match waits for a person; assignment and rejection work ----
     r = s.triage_intake(c, {"note": "refund copy", "card_token": "tok_9f2a6b_4321", "amount": 129.99})

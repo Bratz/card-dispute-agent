@@ -118,7 +118,9 @@ function Approvals({ open, tick, refresh }) {
 
 function Dashboard({ tick }) {
   const [cases, setCases] = useState([]); const [m, setM] = useState({}); const [w, setW] = useState({ counts: {} });
-  useEffect(() => { jget("/api/cases").then(setCases); jget("/metrics").then(setM); jget("/api/workload").then(setW); }, [tick]);
+  const [reqs, setReqs] = useState([]);
+  useEffect(() => { jget("/api/cases").then(setCases); jget("/metrics").then(setM); jget("/api/workload").then(setW);
+    jget("/api/requests/outstanding").then(setReqs); }, [tick]);
   const byStage = {}; const byReason = {};
   cases.forEach(c => { byStage[c.stage] = (byStage[c.stage] || 0) + 1; byReason[c.reason + " · " + c.reason_text] = (byReason[c.reason + " · " + c.reason_text] || 0) + 1; });
   const due = cases.filter(c => c.days_left < 7).length, conf = cases.filter(c => c.conflict).length;
@@ -132,8 +134,15 @@ function Dashboard({ tick }) {
       <${Panel} pad=${false} title="By reason code"><table><thead><tr><th>Reason</th><th class="num">Cases</th></tr></thead>
         <tbody>${Object.entries(byReason).map(([k, v]) => html`<tr key=${k}><td>${k}</td><td class="num">${v}</td></tr>`)}</tbody></table><//>
     </div>
-    <${Panel} title="Workload" x="open cases per person">
-      <div class="kv">${Object.entries(w.counts).map(([n, v]) => html`<dt key=${n}>${n}</dt><dd key=${n + "v"}>${v}</dd>`)}</div><//>
+    <div class="grid2">
+      <${Panel} title="Workload" x="open cases per person">
+        <div class="kv">${Object.entries(w.counts).map(([n, v]) => html`<dt key=${n}>${n}</dt><dd key=${n + "v"}>${v}</dd>`)}</div><//>
+      <${Panel} pad=${false} title="Outstanding requests" x="the chase list, by party">
+        ${reqs.length ? html`<table><thead><tr><th>Party</th><th class="num">Open</th><th class="num">Overdue</th></tr></thead>
+          <tbody>${reqs.map(r => html`<tr key=${r.party}><td>${r.party}</td><td class="num">${r.open_requests}</td>
+            <td class="num" style=${r.overdue ? { color: "var(--alert)" } : {}}>${r.overdue}</td></tr>`)}</tbody></table>`
+          : html`<div class="body" style=${{ color: "var(--muted)" }}>Nothing outstanding.</div>`}<//>
+    </div>
   </div>`;
 }
 
@@ -319,6 +328,12 @@ function CaseTab({ v, cid, reload, refresh }) {
           <div><div style=${{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted)", marginBottom: "5px" }}>For the merchant</div>
             <div style=${{ fontSize: "12.5px", whiteSpace: "pre-wrap" }}>${v.briefs.merchant}</div></div></div>
         <div style=${{ fontSize: "11px", color: "var(--faint)", marginTop: "8px" }}>Written by the advocate pair from the evidence on file. The liability decision stays with the analyst.</div><//>`}
+      ${v.requests && v.requests.length > 0 && html`<${Panel} pad=${false} title="Requests" x="every ask, per party — pulls answer instantly">
+        <table><thead><tr><th>Party</th><th>Asked for</th><th>Status</th><th>Due</th></tr></thead>
+        <tbody>${v.requests.map(r => html`<tr key=${r.request_id}>
+          <td>${r.party_name}</td><td>${r.kinds.join(", ").replace(/_/g, " ")}</td>
+          <td><span class=${"badge" + (r.status === "fulfilled" ? " okb" : r.overdue ? " hi" : "")}>${r.status}${r.chase_count ? " ·" + r.chase_count + " chased" : ""}</span></td>
+          <td class="mono" style=${r.overdue ? { color: "var(--alert)" } : {}}>${r.status === "fulfilled" ? "—" : (r.due_at || "").slice(0, 10)}</td></tr>`)}</tbody></table><//>`}
       <${Panel} title="Exceptions">
         ${v.gaps.length ? v.gaps.map(g => {
           const ab = typeof g.about === "string" ? JSON.parse(g.about || "{}") : (g.about || {});
@@ -417,6 +432,13 @@ function HistoryTab({ cid }) {
       <tbody>${h.evidence.map(e => html`<tr key=${e.evidence_id}>
         <td>${e.kind}</td><td><span class=${"badge" + (e.status === "active" ? " okb" : "")}>${e.status}</span></td>
         <td>${e.source_authority || ""}</td><td class="mono" style=${{ fontSize: "11.5px" }}>${short(JSON.stringify(e.payload), 90)}</td></tr>`)}</tbody></table><//>
+    ${h.requests && h.requests.length > 0 && html`<${Panel} pad=${false} title="Service requests" x="every ask, per party">
+      <table><thead><tr><th>Party</th><th>Asked for</th><th>Status</th><th>Sent</th><th>Answered by</th></tr></thead>
+      <tbody>${h.requests.map(r => html`<tr key=${r.request_id}>
+        <td>${r.party_name}</td><td>${r.kinds.join(", ").replace(/_/g, " ")}</td>
+        <td><span class=${"badge" + (r.status === "fulfilled" ? " okb" : r.overdue ? " hi" : "")}>${r.status}</span></td>
+        <td class="mono">${(r.sent_at || "").slice(0, 10)}</td>
+        <td class="mono" style=${{ fontSize: "11px" }}>${(r.fulfilled_by || []).map(f => f.evidence_id.slice(0, 8)).join(", ") || "—"}</td></tr>`)}</tbody></table><//>`}
     ${h.agent_runs.length > 0 && html`<${Panel} pad=${false} title="Agent runs">
       <table><thead><tr><th>Agent</th><th>Outcome</th><th>Turns</th><th>Tokens</th><th>Started</th></tr></thead>
       <tbody>${h.agent_runs.map(r => html`<tr key=${r.run_id}><td class="mono">${r.agent}</td>

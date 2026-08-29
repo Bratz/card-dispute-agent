@@ -22,6 +22,16 @@ expectations, word for word in short form.
   proposed request behind the approval gate. You can only pull what you can
   address — which is why the merchant's delivery proof still has to be asked
   for, and can still arrive late.
+- **A service-request register, per party** — every ask the case makes lives in
+  one ledger: who was asked (cardholder, merchant via acquirer, network, switch,
+  ledger, carrier), for what, over which channel, due when (the party's SLA).
+  Pulls register and fulfil in the same breath; external asks are stamped when
+  the approved action executes. **Arriving evidence is matched back to the open
+  ask it answers** and linked by id; a correction re-links, never reopens.
+  Overdue merchant asks become chase candidates in the planner (at most two
+  chases, then a person); an expired cardholder ask is closed with "proceeding
+  on the record" on the audit trail. The case shows its Requests strip; the
+  dashboard shows the chase list by party.
 - **Conflicting versions surfaced, not merged** — a delivery record that
   contradicts the cardholder opens a contradiction exception; nobody quietly
   picks a side.
