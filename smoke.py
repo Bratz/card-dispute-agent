@@ -221,6 +221,19 @@ def main():
     sk = agent.load_skills()
     assert len(sk) == 10 and all(sk[n]["body"] for n in sk), list(sk)
     assert len(agent.anthropic_tools_from(agent.A0_TOOL_SPECS)) == len(agent.A0_TOOL_SPECS)
+
+    # ---- advocate pair: opposite souls, checkable dossier, symmetric-or-nothing ----
+    assert set(s.ADVOCATE_SOULS) == {"cardholder", "merchant"}
+    for soul in s.ADVOCATE_SOULS.values():
+        assert "honest" in soul and "cite" in soul and "do not decide" in soul
+    d = s.advocate_dossier(c, cid)
+    assert d["evidence"] and all(len(e["id"]) == 8 for e in d["evidence"])   # citable ids
+    assert d["positions"] and d["case"]["case_id"] == cid
+    assert s.store_briefs(c, cid, {"cardholder": "only one side"}).get("error")   # never one side alone
+    assert s.store_briefs(c, cid, {"cardholder": "brief A cites [%s]" % d["evidence"][0]["id"],
+                                   "merchant": "brief B"})["status"] == "stored"
+    b = s.case_view(c, cid)["briefs"]
+    assert b and "brief A" in b["cardholder"] and "brief B" in b["merchant"]
     assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
 
     # ---- audit is append-only and complete ----

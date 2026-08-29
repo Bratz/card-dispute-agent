@@ -231,6 +231,24 @@ def run_journey_llm(conn, cid):
     return {"A1": a1, "A2": a2}
 
 
+def run_advocates(conn, cid):
+    """The advocate pair: two single-shot briefs from opposite souls over the SAME
+    case file. Stored only if both succeed — one side's argument alone anchors the
+    reader. Briefs argue; the person decides."""
+    import anthropic
+    dossier = json.dumps(S.advocate_dossier(conn, cid), default=str)[:6000]
+    client = anthropic.Anthropic()
+    out = {}
+    for side in ("cardholder", "merchant"):
+        msg = client.messages.create(model=MODEL, max_tokens=400, system=S.ADVOCATE_SOULS[side],
+              messages=[{"role": "user", "content": "The case file:\n" + dossier + "\n\nWrite your brief now."}])
+        out[side] = "".join(b.text for b in msg.content if b.type == "text").strip()
+    r = S.store_briefs(conn, cid, out)
+    if r.get("error"):
+        return {"error": r["error"]}
+    return out
+
+
 def read_charge_slip(image_b64, media_type="image/jpeg"):
     """Optional vision read of a charge-slip photo. Returns {merchant, amount,
     currency, date} or None. Used only when CARD_DISPUTE_LLM=1; typed fields win."""

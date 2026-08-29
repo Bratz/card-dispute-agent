@@ -722,6 +722,59 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
         flag_reeval(c, cid, "timeline", "new evidence: %s" % kind)
     return eid
 
+# ---------------------------------------------------------------- advocate pair
+# Not journey agents: an optional analysis pair. Each writes the strongest honest
+# case for one side, citing only evidence on file. They argue; they never decide.
+ADVOCATE_SOULS = {
+    "cardholder": (
+        "You are the advocate for the cardholder. Write the strongest honest case that the cardholder "
+        "should prevail in this dispute. Use only the evidence in the case file, and cite each item you "
+        "rely on by its id in square brackets. Never invent a fact. In one sentence, name the strongest "
+        "point against your side - an honest advocate does not hide it. You argue; you do not decide "
+        "liability, and you never say who is liable. Plain, simple English. At most 150 words."),
+    "merchant": (
+        "You are the advocate for the merchant. Write the strongest honest case that the merchant should "
+        "prevail in this dispute. Use only the evidence in the case file, and cite each item you rely on "
+        "by its id in square brackets. Never invent a fact. In one sentence, name the strongest point "
+        "against your side - an honest advocate does not hide it. You argue; you do not decide liability, "
+        "and you never say who is liable. Plain, simple English. At most 150 words."),
+}
+
+def advocate_dossier(c, cid):
+    """The case file both advocates receive — identical, ids included so citations are checkable."""
+    return {
+        "case": {k: v for k, v in (get_case(c, cid) or {}).items()
+                 if k in ("case_id", "reason_code", "amount", "currency", "stage")},
+        "evidence": [{"id": e["evidence_id"][:8], "kind": e["kind"], "source": e["source_authority"],
+                      "supplied_by": e["supplied_by"], "at": e["effective_at"], "payload": jl(e["payload"])}
+                     for e in list_evidence(c, cid)],
+        "timeline": [{"at": t["occurred_at"], "event": t["description"]} for t in get_timeline(c, cid)],
+        "positions": [{"statement": h["statement"], "confidence": h["confidence"]}
+                      for h in rows(c, "SELECT statement, confidence FROM hypothesis WHERE case_id=?", (cid,))],
+        "open_gaps": [{"kind": g["kind"], "about": jl(g["about"])} for g in list_gaps(c, cid, open_only=True)],
+    }
+
+def store_briefs(c, cid, briefs):
+    """Store both briefs, or neither — one side's argument alone would anchor the reader."""
+    if not (briefs.get("cardholder") and briefs.get("merchant")):
+        return {"error": "both briefs are required — never one side alone"}
+    for side in ("cardholder", "merchant"):
+        log_audit(c, cid, "Advocate (%s)" % side, "advocate.brief", briefs[side][:2400])
+    c.commit()
+    return {"status": "stored"}
+
+def get_briefs(c, cid):
+    """Latest brief per side, read back from the audit trail."""
+    out = {}
+    for a in reversed(get_audit(c, cid)):
+        if a["event"] == "advocate.brief":
+            side = "cardholder" if "cardholder" in a["actor"] else "merchant"
+            if side not in out:
+                out[side] = a["reason"]
+        if len(out) == 2:
+            break
+    return out or None
+
 # ---------------------------------------------------------------- work queues
 def claim_case(c, cid, user_key):
     """Atomic claim: first come, first served; a claimed case stays claimed."""
@@ -1070,4 +1123,5 @@ def case_view(c, cid):
         "recommended": action,
         "audit": get_audit(c, cid),
         "liability": case["liability_outcome"],
+        "briefs": get_briefs(c, cid),
     }

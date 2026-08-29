@@ -120,6 +120,12 @@ the reason-code rules. The planner chooses dynamically *among permitted actions*
   older than the newest), duplicate, and contradiction.
 - **Reassessment is visible** — after the late evidence, the leading position
   flips on screen and the shift is in the audit trail.
+- **The advocate pair (optional, LLM)** — "Hear both sides" has two agents with
+  opposite souls each write the strongest honest case for one side, citing only
+  evidence on file by id, and naming the best point against themselves. The
+  briefs are stored **both or neither** (one side's argument alone would anchor
+  the reader), land on the audit trail, and are labelled argument, not finding —
+  the conflict stays a person's to resolve.
 
 ## 5. Versioned state, provenance, and the five-way separation
 

@@ -231,16 +231,27 @@ function render(v){
       </div></div>
     </div><div>
       <div class="panel" id="p-pos"><header><h2>Case assessment</h2><span class="x">both kept</span></header><div class="body">${positions(v.hypotheses)}</div></div>
+      ${v.briefs?`<div class="panel" id="p-adv"><header><h2>Both sides, argued</h2><span class="x">argument, not finding · cites evidence ids</span></header><div class="body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">For the cardholder</div><div style="font-size:12.5px;color:var(--ink);white-space:pre-wrap">${esc(v.briefs.cardholder||"")}</div></div>
+          <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">For the merchant</div><div style="font-size:12.5px;color:var(--ink);white-space:pre-wrap">${esc(v.briefs.merchant||"")}</div></div>
+        </div><div style="font-size:11px;color:var(--faint);margin-top:8px">Written by the advocate pair from the evidence on file. The liability decision stays with the analyst.</div></div></div>`:""}
       <div class="panel" id="p-exc"><header><h2>Exceptions</h2></header><div class="body">${gaps}</div></div>
       <div class="panel" id="p-rec"><header><h2>Next best action</h2></header><div class="body">${recPanel(v)}</div></div>
       <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
       <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
     </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><button class="btn" id="advbtn">Hear both sides (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
     <div id="transcript"></div>`;
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
   const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
+  const ab=$("advbtn"); if(ab) ab.onclick=async()=>{
+    ab.textContent="Advocates writing…";ab.disabled=true;
+    const v=await post(`/api/cases/${current}/advocates`);
+    if(v.error){toast(v.error);ab.textContent="Hear both sides (LLM)";ab.disabled=false;return;}
+    render(v);const p=$("p-adv");if(p){p.classList.add("flash");}
+    toast("Both briefs written — the decision is still yours.");};
   const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
   const cl=$("claimbtn"); if(cl) cl.onclick=async()=>{const r=await post(`/api/cases/${current}/claim`);toast(r.error||("Claimed by "+r.by+"."));loadQueue();loadCase(current);};
   const rs=$("reassign"); if(rs) rs.onchange=async()=>{if(!rs.value)return;

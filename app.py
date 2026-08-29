@@ -346,6 +346,27 @@ def intake_run_agent(iid: str):
         c.close()
 
 
+@app.post("/api/cases/{cid}/advocates")
+def advocates_ep(cid: str):
+    """Run the advocate pair: the strongest honest case for each side, stored on
+    the audit trail. Arguments, not findings; the person still decides."""
+    if os.environ.get("CARD_DISPUTE_LLM") != "1":
+        return JSONResponse({"error": "No-code LLM runtime is off. Set CARD_DISPUTE_LLM=1 and ANTHROPIC_API_KEY."}, status_code=400)
+    c = db()
+    try:
+        import agent
+        r = agent.run_advocates(c, cid)
+        if r.get("error"):
+            return JSONResponse(r, status_code=500)
+        v = service.case_view(c, cid)
+        v["timeline_version"] = service.timeline_version(c, cid)
+        return v
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        c.close()
+
+
 @app.post("/api/cases/{cid}/run-agent")
 def run_agent_ep(cid: str):
     """Run the case with the no-code LLM runtime instead of the deterministic engine."""
