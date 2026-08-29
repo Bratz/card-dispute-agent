@@ -130,6 +130,13 @@ def main():
               (iid_key, "merchant_record", s.jd({"order_id": "ORD-5567", "note": "fulfilment"}), "merchant", s.now()))
     r = s.llm_attach_intake(c, iid_key, cid, "order id matches")
     assert r.get("status") == "attached" and "order id" in r["verified_by"], r
+    # an item stored without a kind is classified at attach time, not crashed on
+    iid_nokind = s.uid()
+    c.execute("INSERT INTO intake_item(intake_id,payload,supplied_by,received_at) VALUES(?,?,?,?)",
+              (iid_nokind, s.jd({"order_id": "ORD-5567", "tracking2": "x", "carrier": "FastShip"}), "merchant", s.now()))
+    r = s.llm_attach_intake(c, iid_nokind, cid, "order id matches")
+    assert r.get("status") == "attached", r
+    assert s.one(c, "SELECT kind FROM intake_item WHERE intake_id=?", (iid_nokind,))["kind"] == "delivery_record"
     assert s.search_cases_by_key(c, "order_id", "ORD-5567") == [cid]
     assert s.search_cases_by_key(c, "bad_key", "x").get("error")
 

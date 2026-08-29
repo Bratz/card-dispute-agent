@@ -787,6 +787,9 @@ def _match_case(c, payload):
 def _attach_intake(c, item, cid, how, by):
     """Land a triaged item on its case and run the journey (A0 -> A1 -> A2)."""
     payload = jl(item["payload"])
+    if not item.get("kind"):                      # classify late-arriving unclassified items
+        item = {**item, "kind": _classify_intake(payload)}
+        c.execute("UPDATE intake_item SET kind=? WHERE intake_id=?", (item["kind"], item["intake_id"]))
     supplied = item["supplied_by"] or "merchant"
     assertion = "user_input" if supplied == "customer" else "recorded_fact"
     authority = {"customer": "first_party", "switch": "authoritative"}.get(supplied, "second_party")
