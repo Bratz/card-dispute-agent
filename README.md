@@ -207,6 +207,13 @@ pattern (`agent.py`) — written from scratch, no third-party framework. The age
 proposes actions for approval and never executes; card data stays data, not
 instructions.
 
+**A0 also runs no-code**: `POST /api/intake/{id}/run-agent` (or the "Run A0"
+button on an intake item) triages a cold item with the LLM reading the
+`intake-triage` skill. The judgment is the model's; the safety is not — the
+`attach_to_case` tool **re-verifies the match server-side** and refuses unless a
+certain key really links the item to that case, so even a wrong guess cannot put
+evidence on the wrong dispute. Anything refused goes to the human queue.
+
 ## Data & security
 
 - **Synthetic data only.** No real cardholder or transaction data is used or

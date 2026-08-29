@@ -92,6 +92,20 @@ def main():
     assert s._classify_intake({"tracking": "X1", "carrier": "Y"}) == "delivery_record"
     assert s._classify_intake({"order_id": "O1", "total": 5}) == "receipt"
 
+    # ---- A0 LLM guardrail: the substrate refuses an unverified attach ----
+    iid_nokey = s.uid()
+    c.execute("INSERT INTO intake_item(intake_id,kind,payload,received_at) VALUES(?,?,?,?)",
+              (iid_nokey, "merchant_record", s.jd({"note": "no keys"}), s.now()))
+    r = s.llm_attach_intake(c, iid_nokey, cid, "the model felt sure")
+    assert r.get("error") and "refused" in r["error"], r                 # hallucination blocked
+    iid_key = s.uid()
+    c.execute("INSERT INTO intake_item(intake_id,kind,payload,supplied_by,received_at) VALUES(?,?,?,?,?)",
+              (iid_key, "merchant_record", s.jd({"order_id": "ORD-5567", "note": "fulfilment"}), "merchant", s.now()))
+    r = s.llm_attach_intake(c, iid_key, cid, "order id matches")
+    assert r.get("status") == "attached" and "order id" in r["verified_by"], r
+    assert s.search_cases_by_key(c, "order_id", "ORD-5567") == [cid]
+    assert s.search_cases_by_key(c, "bad_key", "x").get("error")
+
     # ---- NBA demo ML model: trained, sane, and on the record ----
     import ml
     info = ml.model_info(c)
@@ -151,6 +165,7 @@ def main():
     import agent
     sk = agent.load_skills()
     assert len(sk) == 10 and all(sk[n]["body"] for n in sk), list(sk)
+    assert len(agent.anthropic_tools_from(agent.A0_TOOL_SPECS)) == len(agent.A0_TOOL_SPECS)
     assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
 
     # ---- audit is append-only and complete ----

@@ -274,6 +274,22 @@ def intake_reject(iid: str, x_user: str = Header(default="")):
         c.close()
 
 
+@app.post("/api/intake/{iid}/run-agent")
+def intake_run_agent(iid: str):
+    """Triage one pending intake item with the no-code A0 loop (LLM)."""
+    if os.environ.get("CARD_DISPUTE_LLM") != "1":
+        return JSONResponse({"error": "No-code LLM runtime is off. Set CARD_DISPUTE_LLM=1 and ANTHROPIC_API_KEY."}, status_code=400)
+    c = db()
+    try:
+        import agent
+        transcript = agent.run_triage_agent(c, iid)
+        return {"item": service.intake_get(c, iid), "transcript": transcript}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        c.close()
+
+
 @app.post("/api/cases/{cid}/run-agent")
 def run_agent_ep(cid: str):
     """Run the case with the no-code LLM runtime instead of the deterministic engine."""

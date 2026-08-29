@@ -780,6 +780,50 @@ def triage_intake(c, payload, kind=None, supplied_by="merchant", source_system="
     c.commit()
     return {"intake_id": iid, "status": "pending", "suggested_case": cid, "reason": reason}
 
+def intake_get(c, iid):
+    _ensure_intake(c)
+    i = one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,))
+    return {**i, "payload": jl(i["payload"])} if i else None
+
+def open_case_summaries(c):
+    """What A0 may see of the open cases while matching: identifiers only."""
+    return rows(c, """SELECT case_id, disputed_txn_id, card_id, amount, currency, reason_code
+                      FROM dispute_case WHERE status='active'""")
+
+def search_cases_by_key(c, key, value):
+    """Which open cases already hold this key/value in their evidence?"""
+    if key not in ("order_id", "tracking", "txn_id"):
+        return {"error": "key must be order_id, tracking or txn_id"}
+    if key == "txn_id":
+        return [r["case_id"] for r in rows(c, "SELECT case_id FROM dispute_case WHERE disputed_txn_id=? AND status='active'", (value,))]
+    needle = "%" + jd({key: value})[1:-1] + "%"
+    return [r["case_id"] for r in rows(c, """SELECT DISTINCT e.case_id FROM evidence_item e
+                JOIN dispute_case d ON d.case_id=e.case_id
+                WHERE e.status='active' AND d.status='active' AND e.payload LIKE ?""", (needle,))]
+
+def llm_attach_intake(c, iid, case_id, reason):
+    """A0's LLM loop proposes an attach; the substrate re-verifies it. The item
+    lands on the case only if a certain (exact/strong) key really links them."""
+    item = one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,))
+    if not item or item["status"] != "pending":
+        return {"error": "no pending intake item"}
+    cid, tier, why = _match_case(c, jl(item["payload"]))
+    if cid != case_id or tier not in ("exact", "strong"):
+        return {"error": "refused: no certain key links this item to %s (matcher says: %s). "
+                         "Queue it for a person instead." % (case_id, why)}
+    _attach_intake(c, item, case_id, "A0 (llm), verified: %s" % why, "A0 Intake Triage (llm)")
+    c.commit()
+    return {"status": "attached", "case_id": case_id, "verified_by": why, "agent_reason": reason}
+
+def llm_queue_intake(c, iid, suggested_case, reason):
+    item = one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,))
+    if not item or item["status"] != "pending":
+        return {"error": "no pending intake item"}
+    c.execute("UPDATE intake_item SET matched_case=?, match_reason=? WHERE intake_id=?",
+              (suggested_case, "A0 (llm): " + (reason or "needs a person"), iid))
+    c.commit()
+    return {"status": "pending", "suggested_case": suggested_case}
+
 def list_intake(c, pending_only=True):
     _ensure_intake(c)
     q = "SELECT * FROM intake_item" + (" WHERE status='pending'" if pending_only else "") + " ORDER BY received_at"

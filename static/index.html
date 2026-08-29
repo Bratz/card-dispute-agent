@@ -130,6 +130,7 @@ async function loadIntake(){
         <input value="${esc(i.matched_case||"")}" placeholder="Case id (DSP-…)" data-iid="${i.intake_id}" style="width:140px">
         <button class="btn sm" data-assign="${i.intake_id}">Assign to case</button>
         <button class="btn sm" data-rejecti="${i.intake_id}">Reject</button>
+        <button class="btn sm" data-a0="${i.intake_id}">Run A0 (LLM)</button>
       </div></div>`).join("")}</div></div>`;
   box.querySelectorAll("[data-assign]").forEach(b=>b.onclick=async()=>{
     const inp=box.querySelector(`input[data-iid="${b.dataset.assign}"]`);
@@ -138,6 +139,11 @@ async function loadIntake(){
   box.querySelectorAll("[data-rejecti]").forEach(b=>b.onclick=async()=>{
     const r=await post(`/api/intake/${b.dataset.rejecti}/reject`);
     toast(r.error||"Rejected.");loadQueue();});
+  box.querySelectorAll("[data-a0]").forEach(b=>b.onclick=async()=>{
+    b.textContent="A0 working…";b.disabled=true;
+    const r=await post(`/api/intake/${b.dataset.a0}/run-agent`);
+    toast(r.error||(r.item.status==="attached"?("A0 attached it to "+r.item.matched_case):("A0 held it: "+(r.item.match_reason||"needs a person"))));
+    loadQueue();if(current)loadCase(current);});
 }
 async function loadQueue(){
   loadIntake();
