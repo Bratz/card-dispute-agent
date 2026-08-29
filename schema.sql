@@ -88,7 +88,7 @@ CREATE INDEX dl_case ON deadline(case_id);
 CREATE TABLE case_action (
   action_id TEXT PRIMARY KEY,
   case_id TEXT NOT NULL REFERENCES dispute_case(case_id),
-  type TEXT NOT NULL CHECK (type IN ('request_evidence','raise_chargeback','submit_representment','send_correspondence','close_case')),
+  type TEXT NOT NULL CHECK (type IN ('request_evidence','raise_chargeback','submit_representment','send_correspondence','close_case','rerun_advocates','agent_originated')),
   params TEXT NOT NULL DEFAULT '{}',
   idempotency_key TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','executing','done','failed','compensated')),

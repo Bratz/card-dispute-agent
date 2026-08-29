@@ -10,7 +10,7 @@ metadata:
   writes: [propose_action, request_approval, request_intervention, log_audit]
   writes_external: false
   needs_approval: false
-allowed-tools: get_case, list_gaps, list_deadlines, list_hypotheses, get_audit, get_action_scores, propose_action, request_approval, request_intervention, log_audit
+allowed-tools: get_case, list_gaps, list_deadlines, list_hypotheses, get_audit, get_action_scores, propose_action, propose_custom_action, request_approval, request_intervention, log_audit
 ---
 
 # Next best action
@@ -42,6 +42,8 @@ case.
    - Internal step (e.g. trigger more analysis): do it.
    - External or irreversible step: `propose_action(type, params, idempotency_key)`
      then `request_approval`. Then **stop**.
+   - A useful step the menu does not offer: `propose_custom_action` with a plain
+     sentence. It is flagged as your own idea and still waits for a person.
    - Ambiguous or out-of-policy: `request_intervention`.
 6. `log_audit`.
 

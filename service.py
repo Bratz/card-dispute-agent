@@ -352,6 +352,18 @@ def propose_action(c, cid, atype, params, purpose):
     log_audit(c, cid, "next-best-action", "action.proposed", params.get("summary", atype))
     return aid
 
+def propose_free_action(c, cid, description, purpose=None):
+    """An agent-originated step outside the scored menu — genuine planning, same
+    gate: flagged as the agent's own idea and still needs a person's approval."""
+    description = (description or "").strip()
+    if len(description) < 8:
+        return {"error": "describe the step in a sentence"}
+    key = purpose or "agent:" + chash({"d": description})[:10]
+    aid = propose_action(c, cid, "agent_originated", {"summary": description, "origin": "agent"}, key)
+    log_audit(c, cid, "A2 Dispute Case Planner", "action.agent_originated",
+              "a step outside the scored menu: " + description[:200])
+    return aid
+
 def pending_action(c, cid):
     # newest proposed/approved action is the current recommendation (rowid = insertion order)
     return one(c, "SELECT * FROM case_action WHERE case_id=? AND status IN ('proposed','approved','executing') ORDER BY rowid DESC LIMIT 1", (cid,))
@@ -485,15 +497,93 @@ def execute_action(c, aid, mode="ok"):
     return {"status": "compensated"}
 
 # ---------------------------------------------------------------- decision (human only)
+def interpretation_reviewed(c, cid):
+    """Latest specialist review of the interpretation, and whether it still
+    stands — a review is against the record as it was, so new evidence voids it."""
+    a = one(c, "SELECT * FROM audit_entry WHERE case_id=? AND event='interpretation.reviewed' ORDER BY rowid DESC LIMIT 1", (cid,))
+    if not a:
+        return None
+    v = (jl(a["ref"]) or {}).get("timeline_version") if a["ref"] else None
+    return {"by": a["actor"], "at": a["at"], "against_version": v,
+            "current": v == timeline_version(c, cid)}
+
+def review_interpretation(c, cid, user_key, note=""):
+    """A person signs that they read the assessment and both narratives before
+    any liability is recorded. Stamped with the timeline version: late evidence
+    makes the review stale and they must look again."""
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
+    if not get_case(c, cid):
+        return {"error": "no such case"}
+    log_audit(c, cid, user["name"], "interpretation.reviewed",
+              (note or "").strip() or "assessment and both narratives reviewed",
+              ref={"timeline_version": timeline_version(c, cid)})
+    return {"status": "reviewed", "by": user["name"]}
+
 def record_decision(c, cid, outcome, user_key="user1"):
     assert outcome in ("Cardholder favour", "Merchant favour", "No recovery")
     user = USERS.get(user_key)
     if not user:
         return {"error": "unknown user"}
+    r = interpretation_reviewed(c, cid)
+    if not r:
+        return {"error": "review the interpretation first — read the assessment and both narratives, then mark them reviewed"}
+    if not r["current"]:
+        return {"error": "the record changed after the last review — review the interpretation again before deciding"}
     c.execute("UPDATE dispute_case SET liability_outcome=?, stage='resolved', status='closed', updated_at=? WHERE case_id=?",
               (outcome, now(), cid))
     log_audit(c, cid, user["name"], "liability.recorded", outcome + " — case closed")
+    # resolution progresses through the same register every other ask used
+    if outcome == "Cardholder favour":
+        register_request(c, cid, "network", ["correspondence"], "resolution: file the chargeback with the network")
+    register_request(c, cid, "cardholder", ["correspondence"], "resolution: outcome notice to the cardholder")
+    log_audit(c, cid, "orchestration", "resolution.progressed",
+              "outcome notice and filings registered per party — the register carries the resolution too")
     return {"status": "recorded", "by": user["name"]}
+
+def what_changed(c, cid):
+    """The visible delta after the record changed: the latest timeline version
+    against the one before it, what got superseded, whether the assessment moved."""
+    tlv = timeline_version(c, cid)
+    if tlv < 2:
+        return None
+    def evs(v):
+        return {t["description"] for t in rows(c, "SELECT description FROM timeline_event WHERE case_id=? AND version=?", (cid, v))}
+    prev, cur = evs(tlv - 1), evs(tlv)
+    superseded = [{"kind": e["kind"], "id": e["evidence_id"][:8]}
+                  for e in list_evidence(c, cid, active_only=False) if e["status"] == "superseded"]
+    dirs = [a["reason"] for a in get_audit(c, cid) if a["event"] == "assessment.direction"]
+    meta = briefs_meta(c, cid)
+    return {"from_version": tlv - 1, "to_version": tlv,
+            "added": sorted(cur - prev), "removed": sorted(prev - cur),
+            "superseded": superseded,
+            "direction_moved": {"from": dirs[-2], "to": dirs[-1]} if len(dirs) >= 2 else None,
+            "briefs_stale": bool(meta and meta["stale"])}
+
+JOURNEY_LABELS = ["Dispute raised", "Evidence gathered", "Event reconstructed",
+                  "Narratives compared", "Gaps identified", "Evidence requested",
+                  "Interpretation prepared", "Specialist reviewed", "Resolution progressed"]
+
+def journey_steps(c, cid):
+    """The nine-step journey, derived from the record — never stored, so late
+    evidence can honestly move a step back to not-done."""
+    tlv = timeline_version(c, cid)
+    meta = briefs_meta(c, cid)
+    reviewed = interpretation_reviewed(c, cid)
+    hyps = rows(c, "SELECT confidence FROM hypothesis WHERE case_id=?", (cid,))
+    done = [
+        True,
+        len(list_evidence(c, cid)) > 1,
+        tlv >= 1,
+        bool(meta) and not meta["stale"],
+        one(c, "SELECT COUNT(*) n FROM gap WHERE case_id=?", (cid,))["n"] > 0,
+        bool(list_requests(c, cid)),
+        any(h["confidence"] is not None for h in hyps),
+        bool(reviewed) and reviewed["current"],
+        bool(get_case(c, cid)["liability_outcome"]),
+    ]
+    return [{"step": s, "done": d} for s, d in zip(JOURNEY_LABELS, done)]
 
 # ---------------------------------------------------------------- skills (deterministic) & journey
 CANDIDATE_HYPS = [
@@ -618,6 +708,16 @@ def hypothesis_management(c, cid):
         link_evidence(c, h_del, ev["delivery_record"]["evidence_id"], "supports", 1.0)
         link_evidence(c, h_not, ev["delivery_record"]["evidence_id"], "weakens", 1.0)
     score_hypotheses(c, cid)
+    # track which account leads; log only when it moves, so the trail shows every turn
+    hs = rows(c, "SELECT stance, confidence FROM hypothesis WHERE case_id=?", (cid,))
+    if hs:
+        best = max(hs, key=lambda h: h["confidence"] or 0)
+        lead = ("evenly balanced" if len({h["confidence"] for h in hs}) == 1 else
+                "the cardholder's account leads" if best["stance"] == "customer_favour" else
+                "the merchant's account leads")
+        prev = one(c, "SELECT reason FROM audit_entry WHERE case_id=? AND event='assessment.direction' ORDER BY rowid DESC LIMIT 1", (cid,))
+        if not prev or prev["reason"] != lead:
+            log_audit(c, cid, "hypothesis-management", "assessment.direction", lead)
     clear_reeval(c, cid, "hypotheses")
 
 def deadline_tracking(c, cid):
@@ -687,6 +787,10 @@ def score_candidates(c, cid):
             consider("request_evidence",
                      "Chase the %s: %s overdue" % (r["party_name"].lower(), "/".join(r["kinds"]).replace("_", " ")),
                      "chase:" + r["request_id"])
+    meta_b = briefs_meta(c, cid)
+    if meta_b and meta_b["stale"]:
+        consider("rerun_advocates", "Hear both sides again — the record changed since the briefs were written",
+                 "advocates-rerun-v%d" % timeline_version(c, cid))
     if contradiction:
         consider("request_evidence", "Ask the cardholder to confirm the delivery address and who signed",
                  "cardholder-address")
@@ -1049,10 +1153,25 @@ def store_briefs(c, cid, briefs):
     """Store both briefs, or neither — one side's argument alone would anchor the reader."""
     if not (briefs.get("cardholder") and briefs.get("merchant")):
         return {"error": "both briefs are required — never one side alone"}
+    v = timeline_version(c, cid)
     for side in ("cardholder", "merchant"):
-        log_audit(c, cid, "Advocate (%s)" % side, "advocate.brief", briefs[side][:2400])
+        log_audit(c, cid, "Advocate (%s)" % side, "advocate.brief", briefs[side][:2400],
+                  ref={"against_timeline_version": v})
     c.commit()
     return {"status": "stored"}
+
+def briefs_meta(c, cid):
+    """Which timeline version the latest briefs argue against — later versions
+    make them stale: still readable, no longer current."""
+    vers = []
+    for side in ("cardholder", "merchant"):
+        a = one(c, "SELECT ref FROM audit_entry WHERE case_id=? AND event='advocate.brief' AND actor=? ORDER BY rowid DESC LIMIT 1",
+                (cid, "Advocate (%s)" % side))
+        if not a:
+            return None
+        vers.append((jl(a["ref"]) or {}).get("against_timeline_version") if a["ref"] else None)
+    v = min([x for x in vers if x is not None], default=None)
+    return {"against_version": v, "stale": v is not None and v < timeline_version(c, cid)}
 
 def get_briefs(c, cid):
     """Latest brief per side, read back from the audit trail."""
@@ -1419,5 +1538,9 @@ def case_view(c, cid):
         "audit": get_audit(c, cid),
         "liability": case["liability_outcome"],
         "briefs": get_briefs(c, cid),
+        "briefs_meta": briefs_meta(c, cid),
         "requests": list_requests(c, cid),
+        "journey": journey_steps(c, cid),
+        "what_changed": what_changed(c, cid),
+        "interpretation_reviewed": interpretation_reviewed(c, cid),
     }

@@ -137,7 +137,18 @@ the reason-code rules. The planner chooses dynamically *among permitted actions*
 - **Four kinds of exception, all explicit** — missing, stale (dated evidence far
   older than the newest), duplicate, and contradiction.
 - **Reassessment is visible** — after the late evidence, the leading position
-  flips on screen and the shift is in the audit trail.
+  flips on screen and the shift is in the audit trail. A **"What changed" panel**
+  shows the delta plainly: timeline v(n-1) → v(n) line by line, what was
+  superseded (kept, never deleted), and which account led before and after.
+- **Dependent conclusions go stale, honestly** — advocate briefs are stamped
+  with the timeline version they argued against; when the record moves on they
+  are flagged stale (still readable, no longer current), the planner proposes
+  "hear both sides again", and the specialist's review of the interpretation is
+  voided the same way. Nothing is silently rewritten — it is re-examined.
+- **The nine-step journey, derived from the record** — a stepper on every case
+  (raised, gathered, reconstructed, compared, gaps, requested, interpreted,
+  reviewed, resolved). It is computed, never stored, so late evidence can
+  honestly move a step back to not-done.
 - **The advocate pair (optional, LLM)** — "Hear both sides" has two agents with
   opposite souls each write the strongest honest case for one side, citing only
   evidence on file by id, and naming the best point against themselves. The
@@ -267,6 +278,20 @@ unchanged.
   how many sit unassigned. Two people pressing at once get two different cases.
 - **One sign-off is enough** — approving an already-approved action is a no-op
   with a plain message, so a simultaneous double-approval cannot record twice.
+- **The specialist review gate** — liability cannot be recorded until a named
+  person marks the interpretation (assessment and both narratives) reviewed.
+  The review is stamped with the record version it was read against; late
+  evidence voids it and the server refuses the decision until someone looks
+  again. Enforced in `record_decision`, not just the button.
+- **Resolution progresses through the register** — recording the outcome
+  registers the follow-through as service requests per party: the chargeback
+  filing to the network (cardholder favour) and the outcome notice to the
+  cardholder. The same ledger that tracked every ask carries the resolution.
+- **Agent-originated actions** — the LLM planner can propose a step the scored
+  menu does not offer (`propose_custom_action`), described in a plain sentence.
+  It is flagged as the agent's own idea on screen and in the audit trail, and
+  crosses the same approval gate as everything else — genuine planning, same
+  safety story.
 - **Observability** — `/health`, `/metrics` and structured JSON logs.
 
 ## How the end-to-end paragraph is implemented

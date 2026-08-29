@@ -261,9 +261,24 @@ def main():
 
     # ---- decision is human-owned; liability was never set by the journey ----
     assert s.get_case(c, cid)["liability_outcome"] is None
+    # journey stepper is derived from the record: reviewed/resolved not yet lit
+    jr = {j["step"]: j["done"] for j in s.journey_steps(c, cid)}
+    assert jr["Dispute raised"] and jr["Event reconstructed"] and jr["Evidence requested"]
+    assert not jr["Specialist reviewed"] and not jr["Resolution progressed"]
+    # the review gate: no liability without a review against the CURRENT record
+    r = s.record_decision(c, cid, "Merchant favour", user_key="user1")
+    assert "review the interpretation first" in r.get("error", ""), r
+    assert s.review_interpretation(c, cid, "user1", note="read both narratives")["status"] == "reviewed"
+    ir = s.interpretation_reviewed(c, cid)
+    assert ir["current"] and ir["by"] == "User 1"
     s.record_decision(c, cid, "Merchant favour", user_key="user1")
     case = s.get_case(c, cid)
     assert case["liability_outcome"] == "Merchant favour" and case["stage"] == "resolved"
+    # resolution progressed through the register: outcome notice to the cardholder
+    reqs = s.list_requests(c, cid)
+    assert any(q["party_id"] == "cardholder" for q in reqs), reqs   # the notice rides the register
+    assert any(a["event"] == "resolution.progressed" for a in s.get_audit(c, cid))
+    assert {j["step"]: j["done"] for j in s.journey_steps(c, cid)}["Resolution progressed"]
 
     # ---- no-code runtime loads (offline parts; the LLM loop needs a key) ----
     import agent
@@ -284,6 +299,34 @@ def main():
     b = s.case_view(c, cid)["briefs"]
     assert b and "brief A" in b["cardholder"] and "brief B" in b["merchant"]
     assert len(agent.anthropic_tools(agent.TOOL_NAMES)) == len(agent.TOOL_NAMES)
+
+    # ---- dependent conclusions go stale when the record moves on ----
+    bm = s.briefs_meta(c, cid)
+    assert bm and not bm["stale"], bm                       # written against the current record
+    tlv0 = s.timeline_version(c, cid)
+    s.rebuild_timeline(c, cid)                              # the record moves on
+    bm = s.briefs_meta(c, cid)
+    assert bm["stale"] and bm["against_version"] == tlv0, bm
+    cands, _, _ = s.score_candidates(c, cid)
+    assert any(x["atype"] == "rerun_advocates" for x in cands), cands   # planner asks to re-hear
+    jr2 = {j["step"]: j["done"] for j in s.journey_steps(c, cid)}
+    assert not jr2["Narratives compared"]                   # the step honestly un-lights
+    assert not s.interpretation_reviewed(c, cid)["current"] # the review is void too
+    assert "review the interpretation again" in s.record_decision(c, cid, "No recovery", user_key="user1").get("error", "")
+
+    # ---- the visible delta: what changed between timeline versions ----
+    wc = s.what_changed(c, cid)
+    assert wc and wc["to_version"] == tlv0 + 1 and wc["briefs_stale"], wc
+    assert wc["superseded"], wc                             # the corrected delivery record is kept
+    assert wc["direction_moved"], wc                        # the assessment visibly moved sides
+    assert any(a["event"] == "assessment.direction" for a in s.get_audit(c, cid))
+
+    # ---- agent-originated action: outside the menu, flagged, same gate ----
+    aidx = s.propose_free_action(c, cid, "Ask the acquirer for the terminal's CCTV retention policy")
+    ax = s.one(c, "SELECT * FROM case_action WHERE action_id=?", (aidx,))
+    assert ax["type"] == "agent_originated" and s.jl(ax["params"])["origin"] == "agent"
+    assert s.execute_action(c, aidx).get("error")           # unapproved — refused
+    assert s.propose_free_action(c, cid, "short").get("error")
 
     # ---- LLM-first machinery, tested offline with a fake model ----
     from types import SimpleNamespace as NS

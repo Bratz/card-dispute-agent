@@ -270,8 +270,19 @@ function CaseTab({ v, cid, reload, refresh }) {
   });
   const lead = v.hypotheses.reduce((a, b) => (b.confidence > (a?.confidence ?? -1) ? b : a), null);
   const contradiction = v.gaps.some(g => g.kind === "contradiction" && g.status === "open");
+  const wc = v.what_changed;
   return html`<div>
+    ${v.journey && html`<div style=${{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center", marginBottom: "10px" }}>
+      ${v.journey.map((s, i) => html`<span key=${s.step} class=${"badge" + (s.done ? " okb" : "")}
+        title=${s.done ? "done" : "not yet"}>${(i + 1) + " " + s.step}</span>`)}
+      <span style=${{ fontSize: "10.5px", color: "var(--faint)" }}>derived from the record — late evidence can move a step back</span></div>`}
     ${contradiction && !v.liability && html`<div class="banner"><b>The late evidence updated the case.</b> ${" "}The stronger position moved to the merchant, both positions stayed on file, every earlier version was kept, and liability is still an analyst decision.</div>`}
+    ${wc && html`<${Panel} title="What changed" x=${"timeline v" + wc.from_version + " → v" + wc.to_version + " — the visible delta"}>
+      ${wc.added.map(d => html`<div key=${d} style=${{ fontSize: "12.5px" }}><span class="badge okb">+</span> ${" " + d}</div>`)}
+      ${wc.removed.map(d => html`<div key=${d} style=${{ fontSize: "12.5px" }}><span class="badge hi">−</span> ${" " + d}</div>`)}
+      ${wc.superseded.length > 0 && html`<div style=${{ fontSize: "12.5px", marginTop: "5px" }}>Superseded (kept, never deleted): ${wc.superseded.map(s => s.kind.replace(/_/g, " ") + " [" + s.id + "]").join(", ")}</div>`}
+      ${wc.direction_moved && html`<div style=${{ fontSize: "12.5px", marginTop: "5px" }}><b>The assessment moved:</b> ${wc.direction_moved.from} → ${wc.direction_moved.to}</div>`}
+      ${wc.briefs_stale && html`<div style=${{ fontSize: "12.5px", marginTop: "5px", color: "var(--alert)" }}>The advocate briefs were written against the earlier record — hear both sides again.</div>`}<//>`}
     <div class="two"><div>
       <${Panel} title="Case"><div class="kv">
         <dt>Cardholder</dt><dd class="mono">${c.customer_id}</dd>
@@ -321,7 +332,9 @@ function CaseTab({ v, cid, reload, refresh }) {
         ${v.hypotheses.map(h => html`<div class=${"pos" + (h === lead ? " lead" : "")} key=${h.statement}>
           <div class="r"><span class="s">${h.statement}</span><span class="pc">${h.confidence}%</span></div>
           <div class="track"><div class="fill" style=${{ width: h.confidence + "%" }}></div></div></div>`)}<//>
-      ${v.briefs && html`<${Panel} title="Both sides, argued" x="argument, not finding · cites evidence ids">
+      ${v.briefs && html`<${Panel} title="Both sides, argued"
+        x=${"argument, not finding · cites evidence ids" + (v.briefs_meta && v.briefs_meta.stale ? " · written against v" + v.briefs_meta.against_version + " — the record has changed" : "")}>
+        ${v.briefs_meta && v.briefs_meta.stale && html`<div class="banner" style=${{ marginBottom: "8px" }}>These briefs argue the record as it stood at v${v.briefs_meta.against_version}. New evidence arrived since — hear both sides again before relying on them.</div>`}
         <div class="grid2">
           <div><div class="rec-h" style=${{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted)", marginBottom: "5px" }}>For the cardholder</div>
             <div style=${{ fontSize: "12.5px", whiteSpace: "pre-wrap" }}>${v.briefs.cardholder}</div></div>
@@ -341,7 +354,7 @@ function CaseTab({ v, cid, reload, refresh }) {
             <span class="tag">${g.kind}</span><span>${ab.text || (g.kind === "contradiction" ? "cardholder vs delivery record" : "delivery evidence")}</span></div>`;
         }) : html`<span style=${{ color: "var(--muted)", fontSize: "12.5px" }}>No open exceptions.</span>`}<//>
       <${Panel} title="Next best action">
-        ${rec && rec.status === "proposed" ? html`<div class="rec"><div class="h">recommended action · proposed</div>
+        ${rec && rec.status === "proposed" ? html`<div class="rec"><div class="h">recommended action · proposed${rec.params.origin === "agent" ? " · agent-originated" : ""}</div>
             <div class="w">${rec.params.summary}</div>
             <div class="btns"><button class="btn pri" disabled=${busy === "approve"} onClick=${approve}>Approve</button></div>
             ${rec.params.p_success != null && html`<div class="gate">Estimated chance of success ${Math.round(rec.params.p_success * 100)}% · needs ${(rec.params.needs || "analyst").replace("_", " ")} · demo model, synthetic training data</div>`}
@@ -386,8 +399,15 @@ function CaseTab({ v, cid, reload, refresh }) {
 
 function DecisionTab({ v, cid, reload, refresh }) {
   const [choice, setChoice] = useState("");
+  const [note, setNote] = useState("");
   const lead = v.hypotheses.reduce((a, b) => (b.confidence > (a?.confidence ?? -1) ? b : a), null);
   const openGaps = v.gaps.filter(g => g.status === "open").length;
+  const ir = v.interpretation_reviewed, reviewed = !!(ir && ir.current);
+  const review = async () => {
+    const r = await jbody(`/api/cases/${cid}/review-interpretation`, { note });
+    notify(r.error || ("Interpretation reviewed by " + (r.by || NAMES[getMe()]) + "."));
+    reload();
+  };
   const record = async () => {
     const r = await jbody(`/api/cases/${cid}/decision`, { outcome: choice });
     notify(r.error || ("Liability recorded by " + (r.decided_by || NAMES[getMe()]) + " — case closed."));
@@ -402,6 +422,19 @@ function DecisionTab({ v, cid, reload, refresh }) {
       <dt>Strongest position</dt><dd>${lead ? lead.statement + " (" + lead.confidence + "%)" : "—"}</dd>
       <dt>Open exceptions</dt><dd>${openGaps}</dd></div>
       <div class="banner" style=${{ marginTop: "10px" }}>The assessment is advisory. The liability decision is made by the analyst and can differ from the strongest position.</div><//>
+    <${Panel} title="Specialist review" x="read the assessment and both narratives, then sign">
+      ${reviewed ? html`<div style=${{ fontSize: "12.5px" }}><span class="badge okb">reviewed</span>
+          ${" Reviewed by " + ir.by + " against the current record (v" + ir.against_version + ")."}
+          ${ir && html`<div style=${{ color: "var(--muted)", marginTop: "4px" }}>Late evidence voids a review — a new version of the record needs a fresh look.</div>`}</div>`
+        : html`<div>
+          ${ir && !ir.current && html`<div class="banner" style=${{ marginBottom: "8px" }}>The record changed after ${ir.by}'s review (v${ir.against_version}) — it must be reviewed again before deciding.</div>`}
+          <div style=${{ fontSize: "12.5px", marginBottom: "8px" }}>
+            Assessment: ${lead ? lead.statement + " (" + lead.confidence + "%)" : "not prepared yet"}.
+            ${" "}Narratives: ${v.briefs ? "both sides on file" + (v.briefs_meta && v.briefs_meta.stale ? " (stale — the record changed)" : "") : "not written yet"}.</div>
+          <input placeholder="Note (optional)" value=${note} onInput=${e => setNote(e.target.value)} style=${{ width: "100%", marginBottom: "8px" }}/>
+          <button class="btn pri" onClick=${review}>Mark interpretation reviewed</button>
+          <div style=${{ fontSize: "11px", color: "var(--faint)", marginTop: "6px" }}>Recorded on the audit trail, stamped with the record version it was read against.</div>
+        </div>`}<//>
   </div><div>
     <${Panel} title="Record liability">
       ${v.liability ? html`<div class="liab set"><div class="v">${v.liability}</div><div class="n">Recorded · case closed</div></div>`
@@ -411,7 +444,9 @@ function DecisionTab({ v, cid, reload, refresh }) {
               background: choice === o ? "var(--accent-soft)" : "transparent" }}>
             <input type="radio" name="dec" checked=${choice === o} onChange=${() => setChoice(o)} style=${{ marginTop: "2px" }}/>
             <span>${o}<span style=${{ color: "var(--muted)", fontSize: "12px", display: "block" }}>${d}</span></span></label>`)}
-          <button class="btn pri" disabled=${!choice} onClick=${record}>Record decision & close</button>
+          <button class="btn pri" disabled=${!choice || !reviewed} onClick=${record}
+            title=${reviewed ? "" : "review the interpretation first"}>Record decision & close</button>
+          ${!reviewed && html`<div style=${{ fontSize: "11px", color: "var(--faint)", marginTop: "6px" }}>Enabled once the interpretation is reviewed against the current record — enforced by the server, not just this button.</div>`}
           ${" "}<button class="btn" onClick=${() => notify("Cardholder notice generated (PDF).")}>Generate cardholder notice</button>
         </div>`}<//>
   </div></div>`;

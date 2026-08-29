@@ -120,6 +120,10 @@ TOOL_SPECS = {
     "pull_from_systems": ("Pull what the case lacks from queryable systems of record (read-only, "
                           "addressed by keys the case already holds). External parties still need a "
                           "proposed request and a person's approval.", {}, []),
+    "propose_custom_action": ("Propose a step of your own that the scored menu does not offer, described "
+                              "in a plain sentence. It is flagged as agent-originated and still needs a "
+                              "person's approval before anything happens.",
+                              {"description": "string"}, ["description"]),
 }
 TOOL_NAMES = list(TOOL_SPECS.keys())
 
@@ -164,6 +168,7 @@ def _execute(conn, cid, skills, name, a):
     if name == "score_hypotheses": S.score_hypotheses(conn, cid); return "scored"
     if name == "open_gap":        return S.open_gap(conn, cid, a["kind"], a["text"])
     if name == "propose_action":  return S.propose_action(conn, cid, a["atype"], {"summary": a["summary"]}, a["purpose"])
+    if name == "propose_custom_action": return S.propose_free_action(conn, cid, a["description"])
     if name == "request_intervention": S.request_intervention(conn, cid, a["reason"]); return "escalated"
     if name == "log_audit":       S.log_audit(conn, cid, "agent (llm)", a["event"], a["reason"]); return "logged"
     if name == "upsert_evidence":

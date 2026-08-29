@@ -54,13 +54,15 @@ retried all day and still happen once."
 
 ### 5. The main case, as it stands — 60s
 **Click:** open **DSP-100205**, press **Claim**.
-**Say:** "Cardholder says the item never arrived. Every piece of evidence shows
-its source; the card number is already a token. Two interpretations, both on
-screen. One open exception: no delivery proof yet — and one flagged stale, an
-old merchant snapshot. The recommended step carries the model's estimate of
-success, and it waits for a person."
-**Proves:** provenance; redaction; competing interpretations; missing + stale
-exceptions; scored next-best action.
+**Say:** "The strip at the top is the judges' own nine-step journey, computed
+from the record — not a status field anyone sets. Cardholder says the item
+never arrived. Every piece of evidence shows its source; the card number is
+already a token. Two interpretations, both on screen. One open exception: no
+delivery proof yet — and one flagged stale, an old merchant snapshot. The
+recommended step carries the model's estimate of success, and it waits for a
+person."
+**Proves:** the nine-step journey on screen; provenance; redaction; competing
+interpretations; missing + stale exceptions; scored next-best action.
 
 ### 6. THE INJECT — the late evidence arrives cold — 2 min
 **Click:** **Merchant evidence arrives (late)**.
@@ -71,9 +73,13 @@ opened — the cardholder says never arrived, the carrier says delivered and
 signed; the stronger position flipped to the merchant, but both stayed on file;
 and the recommended step changed — ask the cardholder who signed. Nothing was
 lost, nothing acted without approval, and liability is still blank."
-*Point at the banner — it says exactly this.*
+*Point at the **What changed** panel — timeline v1 → v2 line by line, and 'the
+assessment moved: the cardholder's account leads → the merchant's account
+leads'. If the advocate briefs were written, they are now flagged stale —
+written against v1 — and the planner proposes hearing both sides again.*
 **Proves:** the finale inject; automatic case assignment; targeted
-re-evaluation; versioning; the change made visible.
+re-evaluation; versioning; the change made visible; dependent conclusions
+reassessed, not silently rewritten.
 
 ### 7. The merchant corrects the record — 45s
 **Click:** **Merchant corrects the record**.
@@ -113,13 +119,20 @@ correspondence is required for this reason code, and it has already proposed
 requesting it, with a success estimate."
 **Proves:** journey step 1 live; the dynamic planner on a second reason code.
 
-### 12. The decision — and the close — 45s
-**Click:** back on DSP-100205, switch to **User 2**, press **Merchant favour**.
-**Say:** "The machine reconstructed, flagged, argued and proposed — but this
-button is the only way liability gets set, and it records who pressed it. Case
-closed, with the whole story in the audit trail below: every version, every
-approval, every refusal."
-**Proves:** human-owned liability; audit replay.
+### 12. The decision — and the close — 60s
+**Click:** back on DSP-100205, **Decision** tab, switch to **User 2**. Note the
+Record button is disabled — press **Mark interpretation reviewed** first, then
+pick **Merchant favour** and press **Record decision & close**.
+**Say:** "The decision is gated twice. First a named person signs that they
+read the assessment and both narratives — stamped against the record version,
+so if late evidence lands after the review, the server refuses the decision
+until someone looks again. Then the outcome itself: this button is the only way
+liability gets set, and it records who pressed it. And the close isn't the end
+— the outcome notice to the cardholder just landed on the request register, the
+same ledger that tracked every ask. Back on the Case tab, all nine journey
+steps are lit."
+**Proves:** human-owned liability with a review gate; resolution progressed;
+audit replay.
 
 *(Optional close: press **Reset demo** — "and we can run it again from zero.")*
 

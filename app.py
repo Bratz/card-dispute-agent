@@ -328,6 +328,19 @@ def execute(aid: str, mode: str = "ok"):
         c.close()
 
 
+@app.post("/api/cases/{cid}/review-interpretation")
+def review_interpretation(cid: str, note: str = Body(default="", embed=True), x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.review_interpretation(c, cid, x_user, note=note)
+        if r.get("error"):
+            return JSONResponse(r, status_code=403)
+        c.commit()
+        return r
+    finally:
+        c.close()
+
+
 @app.post("/api/cases/{cid}/decision")
 def decision(cid: str, outcome: str = Body(..., embed=True), x_user: str = Header(default="")):
     c = db()
