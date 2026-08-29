@@ -152,6 +152,60 @@ the reason-code rules. The planner chooses dynamically *among permitted actions*
   deterministic matcher and refuses unless a certain key links the item to the
   case, so a wrong guess cannot reach the wrong dispute.
 
+### How partial-failure recovery works
+
+The dangerous moment in a dispute system is not a clean failure — it is a
+**timeout**. The bank sends "raise chargeback", the reply never comes back, and
+now nobody knows whether the far side acted. Retry blind and you may raise it
+twice; give up and you may miss the window. `execute_action` in `service.py` is
+built around that moment.
+
+**Every external action carries an idempotency key** — a unique name for the
+business intent (`case : action type : purpose`), created when the action is
+proposed, long before anything leaves the bank.
+
+**Nothing executes without an approval on file.** The first thing
+`execute_action` checks is a recorded `approve` decision from someone whose role
+the policy accepts. No approval, no call — refused, on the record.
+
+**The call has three honest outcomes, and each is handled:**
+
+- **ok** — the far side confirms; the action is marked `done` with the external
+  reference.
+- **timeout** — the far side may or may not have acted. The action stays in
+  `executing`, and the audit says so plainly:
+  `action.timeout — uncertain, will reconcile on retry`. Nothing is assumed.
+- **fail** — the far side rejected it; the action is marked `compensated` and
+  the failure is on the record.
+
+**A retry reconciles before it acts.** This is the heart of it. Before touching
+the external world again, `execute_action` looks the idempotency key up in the
+external system's own record. If the far side *did* complete the first time —
+the reply was simply lost — the retry adopts that result, marks the action
+`done`, and writes `action.reconciled — external state was completed; no second
+effect`. Only if the external record shows nothing does the retry actually send
+again. A refund can be retried all day and still happen once.
+
+**You can run this live in the UI.** On an approved action, set the dropdown to
+`external: timeout`, press **Execute** — the action hangs in `executing` with
+the uncertainty audited — then press **Retry** and watch it reconcile with no
+second effect. Set `external: fail` to see compensation instead. `smoke.py`
+asserts all three paths, including that the external ledger holds exactly one
+entry after a double execution.
+
+**Why the external record is separate.** The demo's mock external world keeps
+its own ledger, deliberately outside the case state — because that is the real
+shape of the problem: your state and the network's state can disagree, and
+recovery means asking *them*, not trusting yourself. The timeout mode even
+completes on the far side while losing the reply, which is precisely the case
+that breaks naive retry logic.
+
+One honest boundary: the external world here is a mock, as the challenge
+permits. A real connector would implement the same contract — accept an
+idempotency key, answer "what happened to this key?" — which is the standard
+pattern the card networks' APIs support, so the recovery logic carries over
+unchanged.
+
 ## 7. Roles, approval gates, audit replay, configurable boundaries
 
 - **Three working profiles** — Team Lead, User 1 and User 2, enforced
