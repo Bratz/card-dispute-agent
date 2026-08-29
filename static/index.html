@@ -165,7 +165,8 @@ let qf="all";
 async function loadQueue(){
   loadIntake();
   const [cases,m,w]=await Promise.all([get("/api/cases"),get("/metrics"),get("/api/workload")]);
-  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.audit_entries} audit · load: `+
+  const llm=m.llm_runs?` · agents: ${m.llm_runs} runs${m.llm_fallbacks?` (${m.llm_fallbacks} fell back)`:""}`:"";
+  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.audit_entries} audit${llm} · load: `+
     Object.entries(w.counts).map(([n,v])=>`${n.split(" ")[0]} ${v}`).join(" · ")+` · unassigned ${w.unassigned}`;
   const shown=cases.filter(c=>qf==="mine"?c.assigned_to===me():qf==="unassigned"?!c.assigned_to:true);
   $("qn").textContent=shown.length+" of "+cases.length+" · most urgent first";
@@ -241,7 +242,7 @@ function render(v){
       <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
       <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
     </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><button class="btn" id="advbtn">Hear both sides (LLM)</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
+    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><button class="btn" id="advbtn">Hear both sides (LLM)</button><button class="btn" id="runsbtn">Agent runs</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
     <div id="transcript"></div>`;
   document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
   const inj=$("inject"); if(inj) inj.onclick=doInject;
@@ -253,6 +254,7 @@ function render(v){
     render(v);const p=$("p-adv");if(p){p.classList.add("flash");}
     toast("Both briefs written — the decision is still yours.");};
   const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
+  const rb=$("runsbtn"); if(rb) rb.onclick=doShowRuns;
   const cl=$("claimbtn"); if(cl) cl.onclick=async()=>{const r=await post(`/api/cases/${current}/claim`);toast(r.error||("Claimed by "+r.by+"."));loadQueue();loadCase(current);};
   const rs=$("reassign"); if(rs) rs.onchange=async()=>{if(!rs.value)return;
     const r=await postBody(`/api/cases/${current}/assign`,{assignee:rs.value});
@@ -267,7 +269,11 @@ function render(v){
   const cb=$("coldbtn"); if(cb) cb.onclick=async()=>{
     const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
       fields:{note:"Refund receipt copy", card_token:"tok_9f2a6b_4321", amount:129.99, channel:"portal", text:"see attached"}});
-    toast(r.status==="pending"?("Held for a person — "+r.reason):("Attached to "+r.case_id));loadQueue();};
+    toast(r.a0_llm
+      ? (r.status==="attached" ? ("A0 matched it by itself — attached to "+r.case_id+".")
+                               : ("A0 looked at it and held it for a person — "+(r.reason||"")))
+      : (r.status==="pending" ? ("Held for a person — "+r.reason) : ("Attached to "+r.case_id)));
+    loadQueue();};
   document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
   document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
   document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));
@@ -298,6 +304,15 @@ async function doAddEvidence(){
   const v=await postBody(`/api/cases/${current}/evidence`,body);
   if(v.error){toast(v.error);return;}
   render(v); loadQueue(); toast("Evidence added — the case re-reconciled.");
+}
+async function doShowRuns(){
+  const runs=await get(`/api/agent-runs?case_id=${current}`);
+  const box=$("transcript"); if(!box) return;
+  if(!runs.length){box.innerHTML="";toast("No agent runs on this case yet.");return;}
+  box.innerHTML=`<div class="panel"><header><h2>Agent runs</h2><span class="x">every run on the record</span></header>
+    <div class="body" style="padding:0"><table><thead><tr><th>Agent</th><th>Outcome</th><th>Turns</th><th>Tool calls</th><th>Tokens</th><th>Started</th></tr></thead><tbody>${
+    runs.map(r=>`<tr><td class="mono">${esc(r.agent)}</td><td><span class="badge${(r.outcome||"").startsWith("fell_back")?" hi":""}">${esc(r.outcome||"")}</span></td><td class="num">${r.turns||0}</td><td class="num">${r.tool_calls||0}</td><td class="num">${(r.tokens_in||0)+(r.tokens_out||0)}</td><td class="mono">${esc((r.started_at||"").slice(11,19))}</td></tr>`).join("")
+    }</tbody></table></div></div>`;
 }
 async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.error||r.note||("Approved by "+(r.approved_by||me())+"."));loadCase(current);}
 async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await post(`/api/actions/${aid}/execute?mode=${mode}`);
