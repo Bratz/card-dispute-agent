@@ -6,6 +6,9 @@ This is a working, runnable slice — not a slide deck or a mock. The dispute
 journey runs in real code over a database, and the finale scenario (late,
 contradicting merchant evidence) is handled live.
 
+A full timed run-of-show for the live demo — every flow, with the narration and
+what each beat proves — is in [DEMO.md](DEMO.md).
+
 ## How to evaluate (about five minutes)
 
 ```bash

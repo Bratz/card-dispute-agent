@@ -11,7 +11,7 @@ Built for the **Card Dispute Evidence Reconstruction & Resolution** challenge.
 
 **Full feature list, mapped to the challenge's capability expectations — with
 deep-dives on the dynamic next-best-action selection and partial-failure
-recovery: [FEATURES.md](FEATURES.md).**
+recovery: [FEATURES.md](FEATURES.md). Timed demo script: [DEMO.md](DEMO.md).**
 
 ---
 
