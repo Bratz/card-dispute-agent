@@ -255,6 +255,53 @@ def approve(aid: str, x_user: str = Header(default="")):
         c.close()
 
 
+@app.post("/api/actions/{aid}/reject")
+def reject(aid: str, x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.reject_action(c, aid, x_user)
+        c.commit()
+        if r.get("error"):
+            return JSONResponse(r, status_code=403)
+        return r
+    finally:
+        c.close()
+
+
+@app.get("/api/cases/{cid}/history")
+def history(cid: str):
+    c = db()
+    try:
+        h = service.case_history(c, cid)
+        return h if h else JSONResponse({"error": "not found"}, status_code=404)
+    finally:
+        c.close()
+
+
+@app.get("/api/export/{what}")
+def export(what: str, case_id: str = None):
+    """Real exports: cases.csv, or audit.csv?case_id=DSP-…"""
+    from fastapi.responses import PlainTextResponse
+    c = db()
+    try:
+        if what == "cases.csv":
+            lines = ["case_id,customer_id,amount,currency,reason_code,stage,status,assigned_to,liability_outcome,opened_at"]
+            for x in service.list_cases(c):
+                lines.append(",".join(str(x[k] if x[k] is not None else "") for k in
+                                      ("case_id", "customer_id", "amount", "currency", "reason_code",
+                                       "stage", "status", "assigned_to", "liability_outcome", "opened_at")))
+        elif what == "audit.csv" and case_id:
+            lines = ["at,actor,event,reason"]
+            for a in service.get_audit(c, case_id):
+                lines.append(",".join('"%s"' % str(a[k] or "").replace('"', "'") for k in ("at", "actor", "event", "reason")))
+        else:
+            return JSONResponse({"error": "unknown export"}, status_code=404)
+        return PlainTextResponse("\n".join(lines), media_type="text/csv",
+                                 headers={"Content-Disposition": "attachment; filename=%s" % what})
+    finally:
+        c.close()
+
+
 @app.post("/api/actions/{aid}/execute")
 def execute(aid: str, mode: str = "ok"):
     c = db()

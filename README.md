@@ -277,8 +277,12 @@ and production scale. Mock interfaces stand in for external systems.
 schema.sql          SQLite domain model (11 tables)
 service.py          tools + deterministic skills + seed + mock external world
 app.py              FastAPI: endpoints + serves the UI
-static/index.html   the operator UI
+static/             the operator UI — React 18 (vendored UMD + htm, no build
+                    step): sidebar screens (Queue, Approvals, Dashboard,
+                    Reports, Administration) and the case workspace with
+                    Case / Decision / History tabs
 smoke.py            one assert-based end-to-end check
+eval.py             live LLM evaluation harness
 docs/DESIGN.md      the full domain model, tools and skills
 ```
 

@@ -8,328 +8,89 @@
   @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#14171B;--surface:#1B1F25;--surface-2:#242A31;--raise:#1F242A;--ink:#E6E9EC;--muted:#9AA2AA;--faint:#697079;--line:#2A2F36;--line-2:#23282E;--accent:#8FA9D8;--accent-2:#A9BEE4;--accent-soft:#1E2A40;--alert:#D98A8A;--ok:#6FBF95;--warn:#D6A94A}}
   :root[data-theme=dark]{--bg:#14171B;--surface:#1B1F25;--surface-2:#242A31;--raise:#1F242A;--ink:#E6E9EC;--muted:#9AA2AA;--faint:#697079;--line:#2A2F36;--line-2:#23282E;--accent:#8FA9D8;--accent-2:#A9BEE4;--accent-soft:#1E2A40;--alert:#D98A8A;--ok:#6FBF95;--warn:#D6A94A}
   *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:13.5px;line-height:1.5}
-  .mono{font-family:"IBM Plex Mono",monospace}button{font-family:inherit;cursor:pointer}button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-  .bar{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--line);padding:9px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-  .bar b{font-weight:600}.bar .m{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint)}.sp{flex:1}
+  .mono{font-family:"IBM Plex Mono",monospace}button{font-family:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  a{color:inherit;text-decoration:none}
+  .app{display:grid;grid-template-columns:212px 1fr;min-height:100vh}
+  @media(max-width:820px){.app{grid-template-columns:1fr}.side{display:none}}
+  .side{background:var(--surface);border-right:1px solid var(--line);padding:14px 0;position:sticky;top:0;height:100vh}
+  .side .logo{padding:2px 18px 14px;font-weight:600;font-size:15px;border-bottom:1px solid var(--line-2);margin-bottom:8px}
+  .side .logo small{display:block;font-weight:400;font-size:11px;color:var(--faint);margin-top:2px}
+  .side nav a{display:flex;align-items:center;gap:9px;padding:8px 18px;color:var(--muted);font-size:13px;border-left:2px solid transparent;cursor:pointer}
+  .side nav a:hover{color:var(--ink);background:var(--surface-2)}
+  .side nav a.on{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:500}
+  .side nav .grp{padding:14px 18px 5px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+  .side nav a .b{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:20px;padding:0 6px;color:var(--muted)}
+  .top{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--line);padding:9px 22px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .top .crumb{font-size:13px;color:var(--muted)}.top .crumb b{color:var(--ink);font-weight:600}
+  .top .m{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint)}.sp{flex:1}
+  select,input{font-family:inherit;font-size:12.5px;border:1px solid var(--line);border-radius:var(--rs);background:var(--surface);color:var(--ink);padding:5px 7px}
   .btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:var(--rs);padding:6px 12px;font-size:13px;font-weight:500}
   .btn:hover{border-color:var(--accent)}.btn.pri{background:var(--accent);border-color:transparent;color:#fff}.btn.sm{padding:4px 9px;font-size:12px}
+  .btn:disabled{opacity:.5;cursor:default}
   :root[data-theme=dark] .btn.pri,:root:not([data-theme=light]) .btn.pri{color:#14171B}
   @media(prefers-color-scheme:dark){:root:not([data-theme=light]) .btn.pri{color:#14171B}}
-  select{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:var(--rs);background:var(--surface);color:var(--ink);padding:5px 7px}
-  .wrap{max-width:1080px;margin:0 auto;padding:16px 20px 44px}
+  .view{padding:18px 22px 44px;max-width:1120px}
   h1{font-size:17px;font-weight:600;margin:0 0 3px}.sub{color:var(--muted);font-size:12.5px;margin:0 0 14px}
-  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:12px;transition:border-color .8s}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
   .panel>header{display:flex;gap:8px;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line-2);background:var(--raise)}
   .panel>header h2{margin:0;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
   .panel>header .x{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint)}
-  .panel .body{padding:12px 13px}.panel.flash{animation:fl 1s ease}@keyframes fl{0%{border-color:var(--accent)}100%{border-color:var(--line)}}
-  table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:8px 12px;border-bottom:1px solid var(--line)}
-  td{padding:8px 12px;border-bottom:1px solid var(--line-2)}tr:last-child td{border-bottom:0}tr.row{cursor:pointer}tr.row:hover td{background:var(--surface-2)}
+  .panel .body{padding:12px 13px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:8px 12px;border-bottom:1px solid var(--line)}
+  td{padding:8px 12px;border-bottom:1px solid var(--line-2)}tr:last-child td{border-bottom:0}
+  tr.row{cursor:pointer}tr.row:hover td{background:var(--surface-2)}
   .num{text-align:right;font-variant-numeric:tabular-nums}
-  .badge{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted)}
-  .badge.hi{color:var(--alert);border-color:var(--alert)}
-  .two{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;align-items:start}@media(max-width:820px){.two{grid-template-columns:1fr}}
-  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font-size:13px}.kv dt{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;align-self:center}.kv dd{margin:0}
+  .badge{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);white-space:nowrap}
+  .badge.hi{color:var(--alert);border-color:var(--alert)}.badge.okb{color:var(--ok);border-color:var(--ok)}
+  .two{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;align-items:start}@media(max-width:900px){.two{grid-template-columns:1fr}}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font-size:13px}
+  .kv dt{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;align-self:center}.kv dd{margin:0}
   .chip{display:inline-flex;align-items:center;gap:5px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;padding:2px 7px;border-radius:var(--rs);background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
   .chip.tok{background:transparent;border-style:dashed}.chip.new{background:transparent;border-color:var(--alert);color:var(--alert)}
   .item{border:1px solid var(--line);border-radius:var(--rs);padding:8px 11px;margin-bottom:8px}.item:last-child{margin-bottom:0}
-  .item .t{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:3px}.item .k{font-weight:600;font-size:12.5px}.item .w{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}.item .p{font-size:12px;color:var(--muted)}
+  .item .t{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:3px}.item .k{font-weight:600;font-size:12.5px}
+  .item .w{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}.item .p{font-size:12px;color:var(--muted);word-break:break-word}
   .tl{position:relative;padding-left:15px}.tl::before{content:"";position:absolute;left:3px;top:5px;bottom:5px;width:1px;background:var(--line)}
-  .tl .e{position:relative;padding:5px 0 5px 6px;font-size:13px}.tl .e::before{content:"";position:absolute;left:-15px;top:9px;width:7px;height:7px;border-radius:50%;background:var(--surface);border:1.5px solid var(--accent)}.tl .e .d{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}
+  .tl .e{position:relative;padding:5px 0 5px 6px;font-size:13px}.tl .e::before{content:"";position:absolute;left:-15px;top:9px;width:7px;height:7px;border-radius:50%;background:var(--surface);border:1.5px solid var(--accent)}
+  .tl .e .d{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}
   .pos{margin-bottom:9px}.pos .r{display:flex;gap:8px;align-items:center}.pos .s{flex:1;font-size:13px}.pos .pc{font-family:"IBM Plex Mono",monospace;font-size:12px;width:34px;text-align:right}
-  .track{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-top:4px}.fill{height:100%;background:var(--accent-2);border-radius:3px;width:0;transition:width .9s cubic-bezier(.2,.7,.2,1)}.pos.lead .fill{background:var(--accent)}
+  .track{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-top:4px}.fill{height:100%;background:var(--accent-2);border-radius:3px;transition:width .9s cubic-bezier(.2,.7,.2,1)}
+  .pos.lead .fill{background:var(--accent)}
   .exc{display:flex;gap:8px;font-size:12.5px;padding:7px 10px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:var(--rs);margin-bottom:7px}.exc:last-child{margin-bottom:0}
-  .exc.contradiction{border-left-color:var(--alert)}.exc.contradiction .tag{color:var(--alert)}.exc.missing{border-left-color:var(--warn)}.exc.missing .tag{color:var(--warn)}.exc.resolved{opacity:.5;text-decoration:line-through}
+  .exc.contradiction{border-left-color:var(--alert)}.exc.contradiction .tag{color:var(--alert)}
+  .exc.missing{border-left-color:var(--warn)}.exc.missing .tag{color:var(--warn)}
+  .exc.stale{border-left-color:var(--faint)}.exc.resolved{opacity:.5;text-decoration:line-through}
   .exc .tag{font-family:"IBM Plex Mono",monospace;font-size:10px;text-transform:uppercase;color:var(--faint)}
-  .rec{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--rs);padding:11px 12px}.rec .h{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin-bottom:4px}.rec .w{font-size:13.5px;margin-bottom:10px}.rec .btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.gate{font-size:11px;color:var(--faint);margin-top:9px}.gate .ok{color:var(--ok);font-weight:600}
-  .liab .v{font-size:18px;font-weight:600;color:var(--muted)}.liab.set .v{color:var(--ink)}.liab .n{font-size:11px;color:var(--muted);margin-top:5px}.decbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-  .aud{max-height:240px;overflow:auto}.aud .a{display:grid;grid-template-columns:auto 1fr auto;gap:8px;font-size:12px;padding:6px 2px;border-bottom:1px solid var(--line-2)}.aud .a:last-child{border-bottom:0}
-  .aud .ac{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--accent)}.aud .r{color:var(--muted);display:block;font-size:11px}.aud .tm{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--faint)}
-  .actionbar{position:sticky;bottom:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
-  .note{font-size:12.5px;color:var(--muted);flex:1;min-width:200px}
-  .banner{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--rs);padding:11px 13px;font-size:13px;color:var(--muted);margin-bottom:12px;display:none}.banner.show{display:block}.banner b{color:var(--ink)}
-  .toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:20}.toast{background:var(--surface);border:1px solid var(--line);font-size:12.5px;padding:9px 13px;border-radius:var(--rs);max-width:320px}
+  .rec{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--rs);padding:11px 12px}
+  .rec .h{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin-bottom:4px}
+  .rec .w{font-size:13.5px;margin-bottom:10px}.rec .btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .gate{font-size:11px;color:var(--faint);margin-top:9px}.gate .ok{color:var(--ok);font-weight:600}
+  .liab .v{font-size:18px;font-weight:600;color:var(--muted)}.liab.set .v{color:var(--ink)}.liab .n{font-size:11px;color:var(--muted);margin-top:5px}
+  .decbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .aud{max-height:240px;overflow:auto}.aud .a{display:grid;grid-template-columns:auto 1fr auto;gap:8px;font-size:12px;padding:6px 2px;border-bottom:1px solid var(--line-2)}
+  .aud .a:last-child{border-bottom:0}.aud .ac{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--accent)}
+  .aud .rr{color:var(--muted);display:block;font-size:11px}.aud .tm{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--faint);white-space:nowrap}
+  .actionbar{position:sticky;bottom:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px;display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  .note{font-size:12px;color:var(--muted);flex:1;min-width:180px}
+  .banner{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--rs);padding:11px 13px;font-size:13px;color:var(--muted);margin-bottom:12px}
+  .banner b{color:var(--ink)}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  @media(max-width:640px){.kpis{grid-template-columns:1fr 1fr}}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
+  .kpi .l{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint)}
+  .kpi .v{font-size:24px;font-weight:600;margin-top:4px}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .tabs a{padding:8px 14px;font-size:13px;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer}
+  .tabs a:hover{color:var(--ink)}.tabs a.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+  .toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:40}
+  .toast{background:var(--surface);border:1px solid var(--line);font-size:12.5px;padding:9px 13px;border-radius:var(--rs);max-width:320px;box-shadow:0 4px 14px rgba(0,0,0,.08)}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head><body>
-<div class="bar"><b>Disputes Console</b><span class="m" id="meta"></span><span class="sp"></span>
-  <label style="font-size:12px;color:var(--muted)">Signed in as</label>
-  <select id="who"></select>
-  <button class="btn sm" id="raisebtn">Raise dispute</button>
-  <button class="btn sm" id="rulesbtn">Rules</button>
-  <button class="btn sm" id="reset">Reset demo</button>
-  <button class="btn sm" id="tg">Theme</button></div>
-<div class="wrap">
-  <div id="rulespanel" style="display:none"></div>
-  <div id="raisepanel" style="display:none"><div class="panel"><header><h2>Raise a dispute</h2></header><div class="body">
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:720px">
-      <input id="rd-cust" placeholder="Cardholder id"><input id="rd-card" placeholder="Card token">
-      <input id="rd-txn" placeholder="Transaction id"><input id="rd-amt" placeholder="Amount">
-      <select id="rd-rc"><option value="13.1">13.1 — Services not received</option><option value="13.3">13.3 — Not as described</option>
-        <option value="10.4">10.4 — Fraud, card absent</option><option value="12.6">12.6 — Duplicate processing</option></select>
-      <button class="btn pri" id="rd-go">Raise</button>
-    </div></div></div></div>
-  <div id="intakepanel"></div>
-  <div class="panel"><header><h2>Case Queue</h2>
-    <span style="display:flex;gap:4px;margin-left:10px">
-      <button class="btn sm" data-qf="all">All</button>
-      <button class="btn sm" data-qf="mine">My queue</button>
-      <button class="btn sm" data-qf="unassigned">Unassigned</button>
-    </span>
-    <button class="btn sm pri" id="takenext" style="margin-left:8px">Take next case</button>
-    <span class="x" id="qn"></span></header>
-    <div class="body" style="padding:0"><table id="queue"></table></div></div>
-  <div id="workspace"></div>
-</div>
-<div class="toasts" id="toasts"></div>
-<script>
-const $=id=>document.getElementById(id);
-const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-const money=(a,c)=>a==null?"":a.toFixed(2)+" "+(c||"");
-function me(){try{return localStorage.getItem("dc-user")||"user1"}catch(e){return "user1"}}
-function hdrs(){return {"Content-Type":"application/json","X-User":me()};}
-async function get(u){return (await fetch(u,{headers:hdrs()})).json();}
-async function post(u){return (await fetch(u,{method:"POST",headers:hdrs()})).json();}
-async function postBody(u,b){return (await fetch(u,{method:"POST",headers:hdrs(),body:JSON.stringify(b)})).json();}
-async function putBody(u,b){return (await fetch(u,{method:"PUT",headers:hdrs(),body:JSON.stringify(b)})).json();}
-function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;$("toasts").appendChild(t);setTimeout(()=>{t.style.opacity=0;t.style.transition="opacity .3s";setTimeout(()=>t.remove(),300)},2800);}
-// theme
-(function(){try{const s=localStorage.getItem("dc2");if(s)document.documentElement.setAttribute("data-theme",s)}catch(e){}
- const cur=()=>document.documentElement.getAttribute("data-theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
- $("tg").onclick=()=>{const n=cur()==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",n);try{localStorage.setItem("dc2",n)}catch(e){}};})();
-
-let current=null;
-async function loadUsers(){
-  const us=await get("/api/users"); const sel=$("who");
-  sel.innerHTML=Object.entries(us).map(([k,u])=>`<option value="${k}">${esc(u.name)} · ${esc(u.role.replace("_"," "))}</option>`).join("");
-  sel.value=me();
-  sel.onchange=()=>{try{localStorage.setItem("dc-user",sel.value)}catch(e){};toast("Now working as "+sel.options[sel.selectedIndex].text);};
-}
-async function toggleRules(){
-  const box=$("rulespanel");
-  if(box.style.display!=="none"){box.style.display="none";return;}
-  const r=await get("/api/rules");
-  const reasonRows=Object.entries(r.reasons).map(([code,x])=>`<tr>
-    <td class="mono">${esc(code)}</td><td>${esc(x.text)}</td>
-    <td><input data-rk="${code}" data-f="window_days" value="${x.window_days}" style="width:52px"></td>
-    <td><input data-rk="${code}" data-f="required" value="${esc((x.required||[]).join(", "))}" style="width:180px"></td>
-    <td><input data-rk="${code}" data-f="actions" value="${esc((x.actions||[]).join(", "))}" style="width:260px"></td></tr>`).join("");
-  const polRows=Object.entries(r.policy).map(([act,role])=>`<tr><td>${esc(act.replace(/_/g," "))}</td>
-    <td><select data-pk="${act}"><option value="analyst" ${role==="analyst"?"selected":""}>Analyst</option>
-    <option value="team_lead" ${role==="team_lead"?"selected":""}>Team Lead</option></select></td></tr>`).join("");
-  box.innerHTML=`<div class="panel"><header><h2>Administration — reason-code rules &amp; approval policy</h2><span class="x">Team Lead can save</span></header>
-    <div class="body"><table><thead><tr><th>Code</th><th>Meaning</th><th>Window (days)</th><th>Required evidence</th><th>Permitted actions</th></tr></thead><tbody>${reasonRows}</tbody></table>
-    <div style="height:10px"></div>
-    <table style="max-width:420px"><thead><tr><th>Action</th><th>Needs sign-off from</th></tr></thead><tbody>${polRows}</tbody></table>
-    <div style="margin-top:10px"><button class="btn pri" id="saverules">Save rules</button></div></div></div>`;
-  box.style.display="block";
-  $("saverules").onclick=async()=>{
-    const reasons={}; Object.entries(r.reasons).forEach(([code,x])=>{reasons[code]={...x};});
-    box.querySelectorAll("input[data-rk]").forEach(i=>{
-      const o=reasons[i.dataset.rk];
-      if(i.dataset.f==="window_days")o.window_days=parseInt(i.value)||30;
-      else o[i.dataset.f]=i.value.split(",").map(s=>s.trim()).filter(Boolean);
-    });
-    const policy={}; box.querySelectorAll("select[data-pk]").forEach(s=>policy[s.dataset.pk]=s.value);
-    const res=await putBody("/api/rules",{reasons,policy});
-    toast(res.error||"Rules saved.");
-    if(!res.error && current) loadCase(current);
-  };
-}
-async function loadIntake(){
-  const items=await get("/api/intake"); const box=$("intakepanel");
-  if(!items.length){box.innerHTML="";return;}
-  box.innerHTML=`<div class="panel"><header><h2>Intake — evidence awaiting a case</h2><span class="x">${items.length} pending · A0 Intake Triage</span></header>
-    <div class="body">${items.map(i=>`<div class="item"><div class="t"><span class="k">${esc(i.kind||"unknown")}</span>
-      <span class="chip">${esc(i.supplied_by||"")}</span><span class="chip">${esc(i.match_reason||"no match")}</span></div>
-      <div class="p mono">${esc(JSON.stringify(i.payload)).slice(0,180)}</div>
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <input value="${esc(i.matched_case||"")}" placeholder="Case id (DSP-…)" data-iid="${i.intake_id}" style="width:140px">
-        <button class="btn sm" data-assign="${i.intake_id}">Assign to case</button>
-        <button class="btn sm" data-rejecti="${i.intake_id}">Reject</button>
-        <button class="btn sm" data-a0="${i.intake_id}">Run A0 (LLM)</button>
-      </div></div>`).join("")}</div></div>`;
-  box.querySelectorAll("[data-assign]").forEach(b=>b.onclick=async()=>{
-    const inp=box.querySelector(`input[data-iid="${b.dataset.assign}"]`);
-    const r=await postBody(`/api/intake/${b.dataset.assign}/assign`,{case_id:inp.value.trim()});
-    toast(r.error||("Attached to "+r.case_id+"."));loadQueue();if(current)loadCase(current);});
-  box.querySelectorAll("[data-rejecti]").forEach(b=>b.onclick=async()=>{
-    const r=await post(`/api/intake/${b.dataset.rejecti}/reject`);
-    toast(r.error||"Rejected.");loadQueue();});
-  box.querySelectorAll("[data-a0]").forEach(b=>b.onclick=async()=>{
-    b.textContent="A0 working…";b.disabled=true;
-    const r=await post(`/api/intake/${b.dataset.a0}/run-agent`);
-    toast(r.error||(r.item.status==="attached"?("A0 attached it to "+r.item.matched_case):("A0 held it: "+(r.item.match_reason||"needs a person"))));
-    loadQueue();if(current)loadCase(current);});
-}
-let qf="all";
-async function loadQueue(){
-  loadIntake();
-  const [cases,m,w]=await Promise.all([get("/api/cases"),get("/metrics"),get("/api/workload")]);
-  const llm=m.llm_runs?` · agents: ${m.llm_runs} runs${m.llm_fallbacks?` (${m.llm_fallbacks} fell back)`:""}`:"";
-  $("meta").textContent=`${m.cases} cases · ${m.actions_done} executed · ${m.audit_entries} audit${llm} · load: `+
-    Object.entries(w.counts).map(([n,v])=>`${n.split(" ")[0]} ${v}`).join(" · ")+` · unassigned ${w.unassigned}`;
-  const shown=cases.filter(c=>qf==="mine"?c.assigned_to===me():qf==="unassigned"?!c.assigned_to:true);
-  $("qn").textContent=shown.length+" of "+cases.length+" · most urgent first";
-  $("queue").innerHTML="<thead><tr><th>Dispute</th><th>Cardholder</th><th>Amount</th><th>Reason</th><th>Stage</th><th>Window</th><th>Assigned</th><th>Recommended</th></tr></thead><tbody>"+
-    shown.map(c=>`<tr class="row" data-id="${c.case_id}"><td class="mono">${c.case_id}</td><td>${esc(c.customer_id)}</td><td class="num">${money(c.amount,c.currency)}</td><td>${c.reason} · ${esc(c.reason_text)}</td><td><span class="badge">${esc(c.stage)}</span>${c.conflict?' <span class="badge hi">conflict</span>':''}</td><td class="num${c.days_left<7?'" style="color:var(--alert)':''}">${c.days_left}d</td><td>${esc(c.assigned_name||"—")}</td><td style="color:var(--muted)">${esc(c.recommended||"")}</td></tr>`).join("")+"</tbody>";
-  $("queue").querySelectorAll("tr.row").forEach(r=>r.onclick=()=>loadCase(r.dataset.id));
-  document.querySelectorAll("[data-qf]").forEach(b=>{b.onclick=()=>{qf=b.dataset.qf;loadQueue();};b.style.borderColor=b.dataset.qf===qf?"var(--accent)":"";});
-}
-function positions(hyps){const lead=hyps.reduce((a,b)=>b.confidence>a.confidence?b:a,hyps[0]||{});
-  return hyps.map(h=>`<div class="pos ${h===lead?'lead':''}"><div class="r"><span class="s">${esc(h.statement)}</span><span class="pc">${h.confidence}%</span></div><div class="track"><div class="fill" data-w="${h.confidence}"></div></div></div>`).join("");}
-function recPanel(v){
-  const a=v.recommended, last=v.last_action;
-  const mlNote=a&&a.params&&a.params.p_success!=null?`<div class="gate">Estimated chance of success ${Math.round(a.params.p_success*100)}% · needs ${esc((a.params.needs||"analyst").replace("_"," "))} · demo model, synthetic training data</div>`:"";
-  if(a && a.status==="proposed") return `<div class="rec"><div class="h">recommended action · proposed</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><button class="btn pri" data-approve="${a.action_id}">Approve</button></div>${mlNote}<div class="gate">Requires approval before anything leaves the bank</div></div>`;
-  if(a && (a.status==="approved"||a.status==="executing")){
-    const retry=a.status==="executing";
-    return `<div class="rec"><div class="h">recommended action · ${retry?'awaiting reconciliation':'approved'}</div><div class="w">${esc(a.params.summary)}</div><div class="btns"><select id="mode"><option value="ok">external: ok</option><option value="timeout">external: timeout</option><option value="fail">external: fail</option></select><button class="btn pri" data-exec="${a.action_id}">${retry?'Retry':'Execute'}</button></div><div class="gate">Runs once, on the record. Try timeout then retry to see it reconcile.</div></div>`;
-  }
-  if(last && (last.status==="done"||last.status==="compensated")) return `<div class="rec"><div class="h">last action</div><div class="w">${esc(last.params.summary)}</div><div class="gate"><span class="ok">${last.status}</span>${last.external_ref?' · '+esc(last.external_ref):''}</div></div>`;
-  return `<div class="rec"><div class="h">recommended action</div><div class="w" style="color:var(--muted)">none pending</div></div>`;
-}
-async function loadCase(id){
-  const v=await get("/api/cases/"+id); current=id; render(v);
-  window.scrollTo({top:document.getElementById("workspace").offsetTop-60,behavior:"smooth"});
-}
-function render(v){
-  const c=v.case, ev=v.evidence.map(e=>{
-    const img=e.payload&&e.payload.image?`<div style="margin-top:6px"><a href="/${esc(e.payload.image)}" target="_blank"><img src="/${esc(e.payload.image)}" alt="attached photo" style="max-height:70px;border:1px solid var(--line);border-radius:4px"></a></div>`:"";
-    return `<div class="item"><div class="t"><span class="k">${esc(e.kind)}</span><span class="chip">${esc(e.assertion_type)}</span><span class="chip">${esc(e.source_authority||'')}</span>${e.kind==='delivery_record'?'<span class="chip new">late · new</span>':''}<span class="w">${esc((e.effective_at||'').slice(0,10))}</span></div><div class="p mono">${esc(JSON.stringify(e.payload))}</div>${img}</div>`;}).join("");
-  const tl=v.timeline.map(t=>`<div class="e"><div class="d">${esc((t.occurred_at||'').replace('T',' ').slice(0,16))}</div>${esc(t.description)}</div>`).join("")||'<div style="color:var(--muted)">no events yet</div>';
-  const gaps=v.gaps.map(g=>{const ab=JSON.parse(g.about||"{}");return `<div class="exc ${g.kind} ${g.status==='resolved'?'resolved':''}"><span class="tag">${g.kind}</span><span>${esc(ab.text|| (g.kind==='contradiction'?'cardholder vs delivery record':'delivery evidence'))}</span></div>`;}).join("")||'<div style="color:var(--muted);font-size:12.5px">No open exceptions.</div>';
-  const aud=v.audit.map(a=>`<div class="a"><span class="ac">${esc(a.actor)}</span><span>${esc(a.event)}<span class="r">${esc(a.reason||'')}</span></span><span class="tm">${esc((a.at||'').slice(11,19))}</span></div>`).join("");
-  const liab=v.liability?`<div class="liab set"><div class="v">${esc(v.liability)}</div><div class="n">Recorded by an analyst · case closed</div></div>`
-    :`<div class="liab"><div class="v">Not decided</div><div class="n">Liability is recorded by an analyst, not by the system.</div><div class="decbtns"><button class="btn sm" data-dec="Cardholder favour">Cardholder favour</button><button class="btn sm" data-dec="Merchant favour">Merchant favour</button><button class="btn sm" data-dec="No recovery">No recovery</button></div></div>`;
-  $("workspace").innerHTML=`<h1>${c.case_id} — ${esc(c.customer_id)}</h1><p class="sub">${c.reason_code} · ${money(c.amount,c.currency)} · ${esc(c.stage)}</p>
-    <div class="banner" id="banner"></div>
-    <div class="two"><div>
-      <div class="panel" id="p-case"><header><h2>Case</h2></header><div class="body"><div class="kv"><dt>Cardholder</dt><dd class="mono">${esc(c.customer_id)}</dd><dt>Card</dt><dd><span class="chip tok">${esc(c.card_id)}</span></dd><dt>Amount</dt><dd>${money(c.amount,c.currency)}</dd><dt>Reason</dt><dd>${c.reason_code}</dd>
-        <dt>Owner</dt><dd>${c.assigned_to?esc(({lead:"Team Lead",user1:"User 1",user2:"User 2"})[c.assigned_to]||c.assigned_to):'unassigned'}
-          ${!c.assigned_to?'<button class="btn sm" id="claimbtn" style="margin-left:8px">Claim</button>':''}
-          <select id="reassign" style="margin-left:8px"><option value="">reassign…</option><option value="lead">Team Lead</option><option value="user1">User 1</option><option value="user2">User 2</option></select>
-        </dd></div></div></div>
-      <div class="panel" id="p-tl"><header><h2>Event timeline</h2><span class="x">v${v.timeline_version}${v.timeline_version>1?' · previous kept':''}</span></header><div class="body"><div class="tl">${tl}</div></div></div>
-      <div class="panel" id="p-ev"><header><h2>Evidence</h2><span class="x">${v.evidence.length} items</span></header><div class="body">${ev}</div></div>
-      <div class="panel" id="p-add"><header><h2>Add evidence</h2><span class="x">all seven kinds · photo optional</span></header><div class="body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <select id="ev-kind">
-            <option value="customer_statement">Cardholder statement</option>
-            <option value="merchant_record">Merchant record</option>
-            <option value="transaction_event">Transaction record</option>
-            <option value="receipt" selected>Receipt / charge slip</option>
-            <option value="delivery_record">Delivery record</option>
-            <option value="auth_event">Authentication event</option>
-            <option value="correspondence">Correspondence</option>
-          </select>
-          <select id="ev-from"><option value="customer">From the cardholder</option><option value="merchant" selected>From the merchant</option><option value="analyst">Keyed by analyst</option></select>
-          <input id="ev-text" placeholder="Description / text" style="grid-column:1/3">
-          <input id="ev-merchant" placeholder="Merchant"><input id="ev-amount" placeholder="Amount">
-          <input id="ev-date" placeholder="Date (YYYY-MM-DD)"><input id="ev-photo" type="file" accept="image/*">
-        </div>
-        <div style="margin-top:9px"><button class="btn pri" id="ev-add">Add to the case</button>
-        <span style="font-size:11px;color:var(--faint);margin-left:8px">Card numbers in text are masked on intake.</span></div>
-      </div></div>
-    </div><div>
-      <div class="panel" id="p-pos"><header><h2>Case assessment</h2><span class="x">both kept</span></header><div class="body">${positions(v.hypotheses)}</div></div>
-      ${v.briefs?`<div class="panel" id="p-adv"><header><h2>Both sides, argued</h2><span class="x">argument, not finding · cites evidence ids</span></header><div class="body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">For the cardholder</div><div style="font-size:12.5px;color:var(--ink);white-space:pre-wrap">${esc(v.briefs.cardholder||"")}</div></div>
-          <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">For the merchant</div><div style="font-size:12.5px;color:var(--ink);white-space:pre-wrap">${esc(v.briefs.merchant||"")}</div></div>
-        </div><div style="font-size:11px;color:var(--faint);margin-top:8px">Written by the advocate pair from the evidence on file. The liability decision stays with the analyst.</div></div></div>`:""}
-      <div class="panel" id="p-exc"><header><h2>Exceptions</h2></header><div class="body">${gaps}</div></div>
-      <div class="panel" id="p-rec"><header><h2>Next best action</h2></header><div class="body">${recPanel(v)}</div></div>
-      <div class="panel" id="p-liab"><header><h2>Liability decision</h2></header><div class="body">${liab}</div></div>
-      <div class="panel" id="p-aud"><header><h2>Audit trail</h2><span class="x">append-only</span></header><div class="body"><div class="aud">${aud}</div></div></div>
-    </div></div>
-    <div class="actionbar"><button class="btn pri" id="inject">Merchant evidence arrives (late)</button><button class="btn" id="correctbtn">Merchant corrects the record</button><button class="btn" id="coldbtn">Unmatched evidence arrives</button><button class="btn" id="runagent">Run no-code (LLM)</button><button class="btn" id="advbtn">Hear both sides (LLM)</button><button class="btn" id="runsbtn">Agent runs</button><span class="note">The late delivery record arrives with no case reference — Intake Triage finds the case by its order id. The unmatched item only has a card token and amount, so it waits for a person.</span></div>
-    <div id="transcript"></div>`;
-  document.querySelectorAll(".fill").forEach(f=>{const w=f.dataset.w;requestAnimationFrame(()=>requestAnimationFrame(()=>f.style.width=w+"%"));});
-  const inj=$("inject"); if(inj) inj.onclick=doInject;
-  const ra=$("runagent"); if(ra) ra.onclick=doRunAgent;
-  const ab=$("advbtn"); if(ab) ab.onclick=async()=>{
-    ab.textContent="Advocates writing…";ab.disabled=true;
-    const v=await post(`/api/cases/${current}/advocates`);
-    if(v.error){toast(v.error);ab.textContent="Hear both sides (LLM)";ab.disabled=false;return;}
-    render(v);const p=$("p-adv");if(p){p.classList.add("flash");}
-    toast("Both briefs written — the decision is still yours.");};
-  const ad=$("ev-add"); if(ad) ad.onclick=doAddEvidence;
-  const rb=$("runsbtn"); if(rb) rb.onclick=doShowRuns;
-  const cl=$("claimbtn"); if(cl) cl.onclick=async()=>{const r=await post(`/api/cases/${current}/claim`);toast(r.error||("Claimed by "+r.by+"."));loadQueue();loadCase(current);};
-  const rs=$("reassign"); if(rs) rs.onchange=async()=>{if(!rs.value)return;
-    const r=await postBody(`/api/cases/${current}/assign`,{assignee:rs.value});
-    toast(r.error||("Assigned to "+r.to+"."));loadQueue();loadCase(current);};
-  const cr=$("correctbtn"); if(cr) cr.onclick=async()=>{
-    const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
-      fields:{carrier:"FastShip",tracking:"FS-99001",status:"delivered",signed_by:"J. Doe (neighbour)",
-              order_id:"ORD-5567",delivered_at:"2026-07-22T09:41:00Z",
-              note:"Correction: the parcel was signed for by the neighbour"}});
-    toast(r.status==="attached"?"Correction recorded — earlier version kept, case reassessed.":("Held for a person — "+r.reason));
-    loadQueue();if(current)loadCase(current);};
-  const cb=$("coldbtn"); if(cb) cb.onclick=async()=>{
-    const r=await postBody("/api/ingest",{supplied_by:"merchant",source_system:"merchant_portal",
-      fields:{note:"Refund receipt copy", card_token:"tok_9f2a6b_4321", amount:129.99, channel:"portal", text:"see attached"}});
-    toast(r.a0_llm
-      ? (r.status==="attached" ? ("A0 matched it by itself — attached to "+r.case_id+".")
-                               : ("A0 looked at it and held it for a person — "+(r.reason||"")))
-      : (r.status==="pending" ? ("Held for a person — "+r.reason) : ("Attached to "+r.case_id)));
-    loadQueue();};
-  document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>doApprove(b.dataset.approve));
-  document.querySelectorAll("[data-exec]").forEach(b=>b.onclick=()=>doExec(b.dataset.exec));
-  document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>doDecision(b.dataset.dec));
-}
-async function doInject(){const v=await post(`/api/cases/${current}/inject`);render(v);["p-ev","p-tl","p-exc","p-pos","p-rec","p-aud"].forEach(id=>{const p=$(id);if(p){p.classList.remove("flash");void p.offsetWidth;p.classList.add("flash");}});const b=$("banner");if(b){b.innerHTML='<b>The late evidence updated the case.</b> The stronger position moved to the merchant, both positions stayed on file, every earlier version was kept, and liability is still an analyst decision.';b.classList.add("show");}toast("Merchant evidence recorded — case updated.");loadQueue();}
-async function doRunAgent(){
-  const btn=$("runagent"); if(btn){btn.textContent="Running the no-code agents…";btn.disabled=true;}
-  const v=await post(`/api/cases/${current}/run-agent`);
-  if(v.error){toast(v.error); if(btn){btn.textContent="Run no-code (LLM)";btn.disabled=false;} return;}
-  render(v); renderTranscript(v.agent_transcript); loadQueue(); toast("No-code agents finished.");
-}
-function renderTranscript(tr){
-  if(!tr) return; const box=$("transcript"); if(!box) return;
-  const rows=who=>(tr[who]||[]).map(s=> s.tool
-    ? `<div class="a"><span class="ac">${esc(s.tool)}</span><span>${esc(JSON.stringify(s.input||{}).slice(0,140))}</span></div>`
-    : `<div class="a"><span class="ac">final</span><span>${esc((s.final||"").slice(0,400))}</span></div>`).join("");
-  box.innerHTML=`<div class="panel"><header><h2>No-code agent transcript</h2><span class="x">skills read &amp; tools called</span></header><div class="body"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">A1 Evidence Reconciliation</div><div class="aud">${rows("A1")}</div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 0 4px">A2 Dispute Case Planner</div><div class="aud">${rows("A2")}</div></div></div>`;
-}
-async function doAddEvidence(){
-  const f={}; const t=$("ev-text").value, m=$("ev-merchant").value, a=$("ev-amount").value, d=$("ev-date").value;
-  if(t)f.text=t; if(m)f.merchant=m; if(a)f.amount=parseFloat(a)||a; if(d)f.date=d;
-  const body={kind:$("ev-kind").value, supplied_by:$("ev-from").value, fields:f};
-  const file=$("ev-photo").files[0];
-  if(file){
-    const b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.readAsDataURL(file);});
-    body.image_base64=b64; body.filename=file.name;
-  }
-  const v=await postBody(`/api/cases/${current}/evidence`,body);
-  if(v.error){toast(v.error);return;}
-  render(v); loadQueue(); toast("Evidence added — the case re-reconciled.");
-}
-async function doShowRuns(){
-  const runs=await get(`/api/agent-runs?case_id=${current}`);
-  const box=$("transcript"); if(!box) return;
-  if(!runs.length){box.innerHTML="";toast("No agent runs on this case yet.");return;}
-  box.innerHTML=`<div class="panel"><header><h2>Agent runs</h2><span class="x">every run on the record</span></header>
-    <div class="body" style="padding:0"><table><thead><tr><th>Agent</th><th>Outcome</th><th>Turns</th><th>Tool calls</th><th>Tokens</th><th>Started</th></tr></thead><tbody>${
-    runs.map(r=>`<tr><td class="mono">${esc(r.agent)}</td><td><span class="badge${(r.outcome||"").startsWith("fell_back")?" hi":""}">${esc(r.outcome||"")}</span></td><td class="num">${r.turns||0}</td><td class="num">${r.tool_calls||0}</td><td class="num">${(r.tokens_in||0)+(r.tokens_out||0)}</td><td class="mono">${esc((r.started_at||"").slice(11,19))}</td></tr>`).join("")
-    }</tbody></table></div></div>`;
-}
-async function doApprove(aid){const r=await post(`/api/actions/${aid}/approve`);toast(r.error||r.note||("Approved by "+(r.approved_by||me())+"."));loadCase(current);}
-async function doExec(aid){const mode=($("mode")||{}).value||"ok";const r=await post(`/api/actions/${aid}/execute?mode=${mode}`);
-  toast(r.error?("Refused: "+r.error):(r.reconciled?"Reconciled — no second effect.":r.note?("Executing: "+r.note):("Action "+r.status+".")));loadCase(current);loadQueue();}
-async function doDecision(outcome){const v=await postBody(`/api/cases/${current}/decision`,{outcome});if(v.error){toast(v.error);return;}render(v);toast("Liability recorded by "+(v.decided_by||me())+" — case closed.");loadQueue();}
-$("reset").onclick=async()=>{await post("/api/reset");current=null;$("workspace").innerHTML="";toast("Demo reset.");loadQueue();};
-$("rulesbtn").onclick=toggleRules;
-$("takenext").onclick=async()=>{
-  const r=await post("/api/cases/claim-next");
-  if(r.error){toast(r.error);return;}
-  toast("You took "+r.case_id+".");loadQueue();loadCase(r.case_id);};
-$("raisebtn").onclick=()=>{const p=$("raisepanel");p.style.display=p.style.display==="none"?"block":"none";};
-$("rd-go").onclick=async()=>{
-  const r=await postBody("/api/cases",{customer_id:$("rd-cust").value,card_token:$("rd-card").value,
-    txn_id:$("rd-txn").value,amount:$("rd-amt").value,reason_code:$("rd-rc").value});
-  if(r.error){toast(r.error);return;}
-  $("raisepanel").style.display="none";toast("Dispute "+r.case_id+" raised.");loadQueue();loadCase(r.case_id);};
-loadUsers();
-loadQueue();
-</script></body></html>
+<div id="root"></div>
+<script src="/vendor/react.production.min.js"></script>
+<script src="/vendor/react-dom.production.min.js"></script>
+<script src="/vendor/htm.js"></script>
+<script src="/app.js"></script>
+</body></html>

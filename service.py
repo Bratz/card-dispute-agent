@@ -382,6 +382,43 @@ def approve_action(c, aid, user_key="lead"):
     log_audit(c, a["case_id"], "approval", "action.approved", "%s by %s (%s)" % (a["type"], user["name"], user["role"]))
     return {"approval_id": apid, "approved_by": user["name"]}
 
+def reject_action(c, aid, user_key):
+    """Decline a proposed action. Same role rule as approving it."""
+    a = one(c, "SELECT * FROM case_action WHERE action_id=?", (aid,))
+    if not a:
+        return {"error": "no such action"}
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user"}
+    needed = get_policy(c).get(a["type"], "team_lead")
+    if not role_allows(user["role"], needed):
+        return {"error": "%s needs a %s to decline it — you are signed in as %s (%s)"
+                % (a["type"], needed.replace("_", " "), user["name"], user["role"])}
+    if a["status"] != "proposed":
+        return {"note": "this action is no longer awaiting a decision"}
+    c.execute("UPDATE case_action SET status='compensated', result=? WHERE action_id=?",
+              (jd({"declined": True}), aid))
+    c.execute("INSERT INTO approval(approval_id,case_id,action_id,decision,approver_role,approver_id,decided_at) VALUES(?,?,?,?,?,?,?)",
+              (uid(), a["case_id"], aid, "reject", user["role"], user["name"], now()))
+    log_audit(c, a["case_id"], "approval", "action.declined", "%s by %s" % (a["type"], user["name"]))
+    return {"status": "declined", "by": user["name"]}
+
+def case_history(c, cid):
+    """Everything a reviewer replays: every evidence version, every timeline
+    version, every agent run — nothing filtered to 'active'."""
+    if not get_case(c, cid):
+        return None
+    tl = rows(c, "SELECT version, occurred_at, description FROM timeline_event WHERE case_id=? ORDER BY version, occurred_at", (cid,))
+    versions = {}
+    for t in tl:
+        versions.setdefault(t["version"], []).append({"at": t["occurred_at"], "event": t["description"]})
+    return {
+        "evidence": [{**e, "payload": jl(e["payload"])} for e in list_evidence(c, cid, active_only=False)],
+        "timeline_versions": [{"version": v, "events": evs} for v, evs in sorted(versions.items())],
+        "agent_runs": list_agent_runs(c, cid),
+        "audit": get_audit(c, cid),
+    }
+
 def _external_call(c, key, mode):
     """Mock external world. 'timeout' completes on the far side but the reply is
     lost to us — so a retry must reconcile against the ledger, not act again."""
