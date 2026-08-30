@@ -8,7 +8,7 @@ Three automation layers plus manual UI walkthroughs:
 | Service | `python smoke.py` | domain logic, versioning, gates, LLM loop machinery (fake model) | nothing |
 | API | `python test_api.py` | HTTP contract, status codes, role gates over the wire | nothing |
 | Live LLM | `python eval.py [N]` | real-model completion and guardrail rates | `ANTHROPIC_API_KEY`, `CARD_DISPUTE_LLM=1` |
-| UI | manual walkthroughs (TS-16) | persona alignment, rendering | `python app.py` |
+| UI | `python test_ui.py` (Playwright, system Chrome) | TS-16 walkthroughs 1–6 + 9 automated; LLM-on beats stay manual | `python app.py` running |
 
 Conventions: every automated case is assert-based; smoke/test_api recreate the
 database, so never run them against a database you care about. IDs below are
@@ -189,9 +189,15 @@ the wire, response shapes the UI depends on (approvals basis fields, case list
 ordering, metrics keys, skills count). See the file for the case list; each
 assert is one numbered case.
 
-## TS-16 UI persona walkthroughs (manual, ~10 min)
+## TS-16 UI persona walkthroughs
 
-Run `python app.py`, open http://127.0.0.1:8137.
+Walkthroughs 1–6 and the cardholder form are automated in `test_ui.py`
+(Playwright over system Chrome, 9 scenarios): analyst nav/landing/take-next,
+the inject with its visible change, approve→timeout→retry, money refused for
+analysts with basis chips shown, four-eyes on the decision, ops landing,
+auditor read-only, and the cardholder channel form. The LLM-on beats
+(walkthrough 7) stay manual. For a hands-on pass: `python app.py`, open
+http://127.0.0.1:8137.
 
 1. **R. Mehta (analyst)** — lands on queue; Take next claims most-urgent;
    case shows Working positions / Waiting on / Exceptions; Add evidence is
