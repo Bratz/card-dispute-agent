@@ -533,6 +533,45 @@ def main():
     assert calls == ["model-a", "model-b"] and out.stop_reason == "end_turn"
     del _os.environ["CARD_DISPUTE_MODELS"]
 
+    # C2: the shipped default is the current cheap model
+    if not _os.environ.get("CARD_DISPUTE_MODEL"):
+        assert agent._models()[0] == "claude-sonnet-5", agent._models()
+
+    # C3: 4xx surfaces immediately; retryable and unknown errors walk the chain
+    import anthropic as _an
+    assert agent._fatal(_an.BadRequestError.__new__(_an.BadRequestError))
+    assert agent._fatal(_an.AuthenticationError.__new__(_an.AuthenticationError))
+    assert not agent._fatal(_an.RateLimitError.__new__(_an.RateLimitError))
+    assert not agent._fatal(RuntimeError("down"))
+
+    # C5: a refusal is recorded as its own outcome; the floor still finishes
+    r = s.raise_dispute(c, {"customer_id": "CUST-F3", "card_token": "tok_f3", "txn_id": "TXN-F3",
+                            "amount": 45, "reason_code": "13.3"}, "user1")
+    cidr = r["case_id"]
+    c.execute("DELETE FROM case_action WHERE case_id=?", (cidr,)); c.commit()
+    agent.CLIENT_FACTORY = lambda: FakeClient([resp([blk_text("")], "refusal")])
+    agent.run_agent(c, cidr, "A2")
+    rr = next(x for x in s.list_agent_runs(c, cidr) if x["outcome"] == "refused")
+    assert any("refused" in t for t in rr["transcript"]), rr["transcript"]
+    # C5: max_tokens truncation is nudged to continue, then completes
+    agent.CLIENT_FACTORY = lambda: FakeClient([
+        resp([blk_text("partial answer that got cut")], "max_tokens"),
+        resp([blk_tool("propose_action", {"atype": "request_evidence",
+                                          "summary": "after the cut", "purpose": "c5-1"})], "tool_use"),
+        resp([blk_text("done")], "end_turn")])
+    agent.run_agent(c, cidr, "A2")
+    rr = next(x for x in s.list_agent_runs(c, cidr) if x["outcome"] == "complete")
+    assert any("truncated" in t for t in rr["transcript"]), rr["transcript"]
+    # C1: every run records its cache reads alongside the token counts
+    assert rr["transcript"][-1]["usage"].keys() >= {"tokens_in", "tokens_out", "cache_read"}
+
+    # C6: the advocate pair runs through the hardened path (fake-injectable)
+    agent.CLIENT_FACTORY = lambda: FakeClient([
+        resp([blk_text("For the customer, briefly [ref].")], "end_turn"),
+        resp([blk_text("For the merchant, briefly [ref].")], "end_turn")])
+    out = agent.run_advocates(c, cidr)
+    assert "customer" in out["cardholder"] and s.get_briefs(c, cidr)
+
     # 5) conversational intake: fixed schema out; extra keys and bad codes dropped
     agent.CLIENT_FACTORY = lambda: FakeClient([resp([blk_text(
         '{"reason_code":"13.1","amount":30,"currency":"USD","merchant":"X","summary":"not received",'

@@ -1965,12 +1965,11 @@ def agent_reason(c, cid):
     if os.environ.get("CARD_DISPUTE_LLM") != "1":
         return
     try:
-        import anthropic
+        import agent as A            # lazy: shares the model chain, timeout, caching, fakes
         v = case_view(c, cid)
         pos = "; ".join("%s (%d%%)" % (h["statement"], h["confidence"]) for h in v["hypotheses"])
         rec = v["recommended"]["params"]["summary"] if v["recommended"] else "no action pending"
-        client = anthropic.Anthropic()
-        msg = client.messages.create(model="claude-sonnet-4-5", max_tokens=160, system=AGENTS["A2"]["soul"],
+        msg = A._create(A._client(), max_tokens=160, system=AGENTS["A2"]["soul"],
               messages=[{"role": "user", "content":
                          "In two plain sentences for an analyst, say why this is the right next step. "
                          "Positions: %s. Proposed step: %s." % (pos, rec)}])

@@ -396,6 +396,50 @@ hardcoded Reg E-flavour constants and nothing happens when they breach.
   Existing purposes (`merchant-<kind>`, `cardholder-address`) keep their exact
   form — the register wiring and idempotency keys depend on them.
 
+## Claude API review (2026-08-30)
+
+The agent architecture follows Anthropic guidance; the API usage under it is
+a generation stale. All contained in agent.py + two call sites.
+
+- [x] **C1. No prompt caching** — every turn resends system + ~26 tool schemas
+  + growing history at full price (live eval: 510K input tokens / 9 runs).
+  The prefix is already cache-stable (frozen system, sorted tools). Fix:
+  top-level `cache_control: {"type": "ephemeral"}` in `_create`; record
+  `usage.cache_read_input_tokens` per run for observability.
+
+- [x] **C2. Stale default model + one hardcoded site** — default
+  `claude-sonnet-4-5`; Claude Sonnet 5 ($2/$10) is newer and cheaper.
+  `agent_reason` (service.py) hardcodes the model, bypassing
+  CARD_DISPUTE_MODEL. Fix: default `claude-sonnet-5`, chain fallback
+  `claude-haiku-4-5`; agent_reason uses the shared path. (No prefill,
+  temperature or budget_tokens anywhere, so the migration is clean.)
+
+- [x] **C3. Fallback chain catches everything** — `_create` model-hops on ANY
+  exception: a 400 from a schema bug silently switches models; a 401 burns
+  the chain. Fix: raise 4xx (except 408/409/429) immediately; fall through
+  only on connection/timeout/429/5xx/unknown.
+
+- [x] **C4. "Reply with only JSON" parsing** — parse_dispute_text and
+  read_charge_slip prompt for raw JSON and strip fences by hand. Fix:
+  structured outputs (`output_config.format`) so the shape is guaranteed;
+  keep the plain-text fallback for the scripted test client.
+
+- [x] **C5. Stop reasons beyond tool_use unhandled** — `max_tokens` truncation
+  is recorded as a final answer; `refusal` (HTTP 200 + stop_details on
+  current models) would log as complete; `pause_turn` unknown. Fix: raise
+  max_tokens to 4096; on max_tokens nudge-continue and mark truncated; on
+  refusal record outcome `refused` and let the deterministic floor finish;
+  on pause_turn continue the loop.
+
+- [x] **C6. Two call sites bypass the hardened path** — run_advocates and
+  agent_reason build their own client: no fake-client injection, no chain,
+  no timeout. Fix: route both through `_client()`/`_create`.
+
+- [x] **C7. Smaller** — advocate dossier silently truncated at 6000 chars (can
+  cut cited evidence: trim payload bodies, keep ids); new client per run
+  (module singleton, factory override kept); keep the good input hygiene
+  (tool-result truncation, audit tail) as is.
+
 ## Verify
 
 - `python smoke.py` after each fix; add one assert per behavioral fix

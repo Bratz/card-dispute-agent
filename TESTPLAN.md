@@ -141,6 +141,9 @@ stable — reference them in bug reports.
 | 10-8 | Cooperative cancel | cancel before run | outcome `cancelled`, zero turns | smoke |
 | 10-9 | Conversational-intake schema whitelist | fake reply with extra key / bad code | extras dropped; bad reason → None | smoke |
 | 10-10 | Vision/parse fallback when LLM off | POST /api/cardholder/parse | 400 with guidance | test_api |
+| 10-11 | 4xx never model-hops | fatal-vs-retryable predicate | BadRequest/Auth raise; 429/unknown walk the chain | smoke |
+| 10-12 | Refusal & truncation outcomes | fake model returns `refusal` / `max_tokens` | run recorded `refused`; truncation nudged to continue then completes; usage entry carries cache reads | smoke |
+| 10-13 | Advocates on the hardened path | fake client scripts both briefs | briefs stored via the shared chain/factory | smoke |
 
 ## TS-11 LLM live evals (cost money — run deliberately)
 
