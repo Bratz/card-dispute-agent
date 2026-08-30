@@ -91,7 +91,6 @@ def model_info(c):
 
 def predict(c, features):
     m = model_info(c)
-    if not m:
-        train(c)
-        m = model_info(c)
+    if not m:  # never train inside a read path — seed()/train() own that write
+        raise RuntimeError("NBA model missing — run seed() or ml.train() at boot")
     return _sigmoid(sum(a * b for a, b in zip(m["weights"], _vec(features))))

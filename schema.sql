@@ -8,6 +8,7 @@ CREATE TABLE dispute_case (
   customer_id TEXT NOT NULL,
   card_id TEXT NOT NULL,                 -- token, never a real PAN
   disputed_txn_id TEXT NOT NULL,
+  arn TEXT,                              -- acquirer reference number: the network's matching key
   reason_code TEXT NOT NULL,
   amount REAL, currency TEXT,
   stage TEXT NOT NULL DEFAULT 'raised'
@@ -88,7 +89,7 @@ CREATE INDEX dl_case ON deadline(case_id);
 CREATE TABLE case_action (
   action_id TEXT PRIMARY KEY,
   case_id TEXT NOT NULL REFERENCES dispute_case(case_id),
-  type TEXT NOT NULL CHECK (type IN ('request_evidence','raise_chargeback','submit_representment','send_correspondence','close_case','rerun_advocates','agent_originated')),
+  type TEXT NOT NULL CHECK (type IN ('request_evidence','raise_chargeback','submit_representment','send_correspondence','close_case','rerun_advocates','agent_originated','deny_dispute','write_off')),
   params TEXT NOT NULL DEFAULT '{}',
   idempotency_key TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','executing','done','failed','compensated')),

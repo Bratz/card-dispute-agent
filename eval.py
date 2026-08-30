@@ -121,7 +121,7 @@ def gated_close(c):
     S.review_interpretation(c, cid, "user2", note="read the assessment and both briefs")
     lead_pos = max(S.case_view(c, cid)["hypotheses"], key=lambda h: h["confidence"] or 0)
     outcome = "Merchant favour" if lead_pos["stance"] == "merchant_favour" else "Cardholder favour"
-    if S.record_decision(c, cid, outcome, user_key="user2").get("error"):
+    if S.record_decision(c, cid, outcome, user_key="user1").get("error"):   # four-eyes: user2 reviewed
         return False
     c.commit()
     steps = {j["step"]: j["done"] for j in S.journey_steps(c, cid)}

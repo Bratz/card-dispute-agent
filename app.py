@@ -47,6 +47,7 @@ def metrics():
             "audit_entries": g("SELECT COUNT(*) FROM audit_entry"),
         }
         out.update(service.llm_metrics(c))
+        out["llm_enabled"] = os.environ.get("CARD_DISPUTE_LLM") == "1"
         return out
     finally:
         c.close()
@@ -71,21 +72,27 @@ def agents():
 def cases():
     c = db()
     try:
+        # whole-book lookups once, not per case
+        rules = service.get_rules(c)
+        pend = {}   # newest proposed/approved/executing action per case (rowid order — last wins)
+        for a in service.rows(c, "SELECT case_id, params FROM case_action "
+                                 "WHERE status IN ('proposed','approved','executing') ORDER BY rowid"):
+            pend[a["case_id"]] = service.jl(a["params"])
+        confl = {g["case_id"] for g in service.rows(
+            c, "SELECT DISTINCT case_id FROM gap WHERE kind='contradiction' AND status='open'")}
+        dl = service.days_left_map(c)
         out = []
         for case in service.list_cases(c):
             cid = case["case_id"]
-            rule = service.chargeback_rules(c, case["reason_code"])
-            action = service.pending_action(c, cid)
-            conflict = any(g["kind"] == "contradiction" and g["status"] == "open"
-                           for g in service.list_gaps(c, cid, open_only=True))
+            rule = rules.get(case["reason_code"]) or {"text": case["reason_code"]}
             out.append({
                 "case_id": cid, "customer_id": case["customer_id"], "amount": case["amount"],
                 "currency": case["currency"], "reason": case["reason_code"], "reason_text": rule["text"],
-                "stage": case["stage"], "status": case["status"], "conflict": conflict,
+                "stage": case["stage"], "status": case["status"], "conflict": cid in confl,
                 "assigned_to": case["assigned_to"],
                 "assigned_name": service.USERS.get(case["assigned_to"], {}).get("name") if case["assigned_to"] else None,
-                "days_left": service._days_left(c, cid),
-                "recommended": service.jl(action["params"]).get("summary") if action else None,
+                "days_left": dl.get(cid, 30),
+                "recommended": (pend.get(cid) or {}).get("summary"),
             })
         # most urgent first: fewest days left on the window, then oldest case
         out.sort(key=lambda x: (x["days_left"], x["case_id"]))
@@ -99,7 +106,6 @@ def outstanding_requests():
     """Open asks across the book, by party — the ops chase list."""
     c = db()
     try:
-        service._ensure_register(c)
         return service.rows(c, """SELECT p.name party, COUNT(*) open_requests,
             SUM(CASE WHEN sr.due_at < ? AND sr.status IN ('sent','chased') THEN 1 ELSE 0 END) overdue
             FROM service_request sr JOIN party p ON p.party_id = sr.party_id
@@ -152,14 +158,20 @@ def assign(cid: str, assignee: str = Body(..., embed=True), x_user: str = Header
 def approvals():
     c = db()
     try:
+        confl = {g["case_id"] for g in service.rows(
+            c, "SELECT DISTINCT case_id FROM gap WHERE kind='contradiction' AND status='open'")}
         out = []
         for case in service.list_cases(c):
             a = service.one(c, "SELECT * FROM case_action WHERE case_id=? AND status='proposed' ORDER BY rowid DESC LIMIT 1",
                             (case["case_id"],))
             if a:
+                p = service.jl(a["params"]) or {}
                 out.append({"case_id": case["case_id"], "action_id": a["action_id"], "type": a["type"],
-                            "summary": service.jl(a["params"]).get("summary"), "amount": case["amount"],
-                            "currency": case["currency"], "reason": case["reason_code"]})
+                            "summary": p.get("summary"), "amount": case["amount"],
+                            "currency": case["currency"], "reason": case["reason_code"],
+                            # the basis for judging it: who proposed, how sure, what's open
+                            "origin": p.get("origin"), "p_success": p.get("p_success"),
+                            "needs": p.get("needs"), "conflict": case["case_id"] in confl})
         return out
     finally:
         c.close()
@@ -195,6 +207,49 @@ def users():
     return service.USERS
 
 
+@app.get("/api/skills")
+def skills():
+    """The no-code program, readable by its administrator."""
+    import agent
+    return agent.load_skills()
+
+
+@app.get("/api/cardholder/{cid}")
+def cardholder_case(cid: str):
+    """The cardholder's own view — minimised server-side."""
+    c = db()
+    try:
+        v = service.cardholder_view(c, cid)
+        return v if v else JSONResponse({"error": "not found"}, status_code=404)
+    finally:
+        c.close()
+
+
+@app.post("/api/cardholder/parse")
+def cardholder_parse(payload: dict = Body(...)):
+    """Conversational intake: the agent structures the story; a person confirms."""
+    if os.environ.get("CARD_DISPUTE_LLM") != "1":
+        return JSONResponse({"error": "Conversational intake needs the LLM (CARD_DISPUTE_LLM=1) — use the form instead."},
+                            status_code=400)
+    import agent
+    try:
+        return {"draft": agent.parse_dispute_text(payload.get("text") or "")}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/cardholder/raise")
+def cardholder_raise(payload: dict = Body(...)):
+    c = db()
+    try:
+        r = service.raise_from_cardholder(c, payload.get("fields") or {}, payload.get("statement") or "")
+        if r.get("error"):
+            return JSONResponse(r, status_code=400)
+        return r
+    finally:
+        c.close()
+
+
 @app.get("/api/rules")
 def rules_get():
     c = db()
@@ -224,8 +279,8 @@ def rules_put(payload: dict = Body(...), x_user: str = Header(default="")):
 
 @app.post("/api/cases/{cid}/evidence")
 def add_evidence_ep(cid: str, payload: dict = Body(...), x_user: str = Header(default="")):
-    if x_user not in service.USERS:
-        return JSONResponse({"error": "unknown user — pick a profile first"}, status_code=403)
+    if not service.can_work(x_user):
+        return JSONResponse({"error": "pick an analyst or team-lead profile to add evidence"}, status_code=403)
     fields = payload.get("fields") or {}
     image_bytes, image_name = None, payload.get("filename")
     if payload.get("image_base64"):
@@ -296,32 +351,37 @@ def history(cid: str):
 @app.get("/api/export/{what}")
 def export(what: str, case_id: str = None):
     """Real exports: cases.csv, or audit.csv?case_id=DSP-…"""
+    import csv, io
     from fastapi.responses import PlainTextResponse
     c = db()
     try:
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
         if what == "cases.csv":
-            lines = ["case_id,customer_id,amount,currency,reason_code,stage,status,assigned_to,liability_outcome,opened_at"]
+            cols = ("case_id", "customer_id", "amount", "currency", "reason_code",
+                    "stage", "status", "assigned_to", "liability_outcome", "opened_at")
+            w.writerow(cols)
             for x in service.list_cases(c):
-                lines.append(",".join(str(x[k] if x[k] is not None else "") for k in
-                                      ("case_id", "customer_id", "amount", "currency", "reason_code",
-                                       "stage", "status", "assigned_to", "liability_outcome", "opened_at")))
+                w.writerow([x[k] if x[k] is not None else "" for k in cols])
         elif what == "audit.csv" and case_id:
-            lines = ["at,actor,event,reason"]
+            w.writerow(["at", "actor", "event", "reason", "ref"])
             for a in service.get_audit(c, case_id):
-                lines.append(",".join('"%s"' % str(a[k] or "").replace('"', "'") for k in ("at", "actor", "event", "reason")))
+                w.writerow([a["at"], a["actor"], a["event"], a["reason"] or "", a["ref"] or ""])
         else:
             return JSONResponse({"error": "unknown export"}, status_code=404)
-        return PlainTextResponse("\n".join(lines), media_type="text/csv",
+        return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                                  headers={"Content-Disposition": "attachment; filename=%s" % what})
     finally:
         c.close()
 
 
 @app.post("/api/actions/{aid}/execute")
-def execute(aid: str, mode: str = "ok"):
+def execute(aid: str, mode: str = "ok", x_user: str = Header(default="")):
+    if not service.can_work(x_user):
+        return JSONResponse({"error": "pick an analyst or team-lead profile to execute"}, status_code=403)
     c = db()
     try:
-        r = service.execute_action(c, aid, mode=mode)
+        r = service.execute_action(c, aid, mode=mode, user_key=x_user)
         c.commit()
         return r
     finally:
@@ -357,13 +417,35 @@ def decision(cid: str, outcome: str = Body(..., embed=True), x_user: str = Heade
         c.close()
 
 
+@app.post("/api/cases/{cid}/network-outcome")
+def network_outcome(cid: str, result: str = Body(..., embed=True), x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.record_network_outcome(c, cid, result, user_key=x_user)
+        if r.get("error"):
+            return JSONResponse({"error": r["error"]}, status_code=r.get("code", 400))
+        c.commit()
+        return r
+    finally:
+        c.close()
+
+
+@app.get("/api/reports")
+def reports():
+    c = db()
+    try:
+        return service.report_summary(c)
+    finally:
+        c.close()
+
+
 @app.post("/api/cases")
 def raise_case(payload: dict = Body(...), x_user: str = Header(default="")):
     c = db()
     try:
         r = service.raise_dispute(c, payload, x_user)
         if r.get("error"):
-            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+            return JSONResponse({"error": r["error"]}, status_code=r.get("code", 400))
         return r
     finally:
         c.close()
@@ -414,7 +496,7 @@ def intake_assign(iid: str, case_id: str = Body(..., embed=True), x_user: str = 
     try:
         r = service.resolve_intake(c, iid, case_id, x_user)
         if r.get("error"):
-            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+            return JSONResponse({"error": r["error"]}, status_code=r.get("code", 400))
         return r
     finally:
         c.close()
@@ -426,7 +508,7 @@ def intake_reject(iid: str, x_user: str = Header(default="")):
     try:
         r = service.resolve_intake(c, iid, None, x_user, reject=True)
         if r.get("error"):
-            return JSONResponse(r, status_code=403 if "user" in r["error"] else 400)
+            return JSONResponse({"error": r["error"]}, status_code=r.get("code", 400))
         return r
     finally:
         c.close()
@@ -471,25 +553,48 @@ def advocates_ep(cid: str):
 
 @app.post("/api/cases/{cid}/run-agent")
 def run_agent_ep(cid: str):
-    """Run the case with the no-code LLM runtime instead of the deterministic engine."""
+    """Start the no-code LLM journey as a background job (ii-agent pattern:
+    the transport schedules, it never executes). The run is a durable record —
+    poll GET /api/agent-runs?case_id=… ; each turn updates the row."""
     if os.environ.get("CARD_DISPUTE_LLM") != "1":
         return JSONResponse({"error": "No-code LLM runtime is off. Set CARD_DISPUTE_LLM=1 and ANTHROPIC_API_KEY."}, status_code=400)
     c = db()
     try:
-        import agent
-        transcript = agent.run_journey_llm(c, cid)
-        v = service.case_view(c, cid)
-        v["timeline_version"] = service.timeline_version(c, cid)
-        v["agent_transcript"] = transcript
-        return v
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        if not service.get_case(c, cid):
+            return JSONResponse({"error": "not found"}, status_code=404)
     finally:
         c.close()
 
+    def _job():
+        cj = service.connect()
+        try:
+            import agent
+            agent.run_journey_llm(cj, cid)
+        except Exception as e:
+            logging.getLogger("card_dispute").warning("agent journey failed for %s: %s", cid, e)
+        finally:
+            cj.close()
+
+    import threading
+    threading.Thread(target=_job, daemon=True).start()
+    return {"status": "started", "case_id": cid, "poll": "/api/agent-runs?case_id=" + cid}
+
+
+@app.post("/api/cases/{cid}/cancel-agents")
+def cancel_agents(cid: str, x_user: str = Header(default="")):
+    """Cooperative cancel: stops LLM spend at the next turn boundary; the
+    deterministic engine finishes the stage so the case stays workable."""
+    if not service.can_work(x_user):
+        return JSONResponse({"error": "pick an analyst or team-lead profile"}, status_code=403)
+    import agent
+    agent.cancel_case_runs(cid)
+    return {"status": "cancel requested"}
+
 
 @app.post("/api/reset")
-def reset():
+def reset(x_user: str = Header(default="")):
+    if service.USERS.get(x_user, {}).get("role") != "team_lead":
+        return JSONResponse({"error": "only the Team Lead can reset the demo"}, status_code=403)
     c = service.init_db(reset=True)
     service.seed(c)
     c.close()

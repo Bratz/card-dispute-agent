@@ -45,20 +45,46 @@ def case_lock(cid):
         return _case_locks.setdefault(cid, threading.RLock())
 
 def init_db(path=DB_PATH, reset=False):
-    if reset and os.path.exists(path):
-        os.remove(path)
+    """schema.sql is the single source of truth; it runs (idempotently) on every
+    boot, so tables added later appear in old databases too. Reset empties the
+    rows in place — never deletes the file under live WAL connections."""
     fresh = not os.path.exists(path)
     c = connect(path)
-    if fresh:
-        with open(SCHEMA, encoding="utf-8") as f:
-            c.executescript(f.read())
-        c.commit()
-    else:  # tiny defensive migration for databases created before work queues
+    with open(SCHEMA, encoding="utf-8") as f:
+        ddl = f.read()
+    if not fresh:
+        ddl = (ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+                  .replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ")
+                  .replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
+    c.executescript(ddl)
+    for col in ("assigned_to", "arn"):   # defensive column migrations for older databases
         try:
-            c.execute("SELECT assigned_to FROM dispute_case LIMIT 1")
+            c.execute("SELECT %s FROM dispute_case LIMIT 1" % col)
         except sqlite3.OperationalError:
-            c.execute("ALTER TABLE dispute_case ADD COLUMN assigned_to TEXT")
-            c.commit()
+            c.execute("ALTER TABLE dispute_case ADD COLUMN %s TEXT" % col)
+    # case_action grew new action types; the CHECK is baked into the table DDL, so rebuild
+    ca = one(c, "SELECT sql FROM sqlite_master WHERE type='table' AND name='case_action'")
+    if ca and "write_off" not in ca["sql"]:
+        c.execute("PRAGMA foreign_keys=OFF")
+        c.execute("PRAGMA legacy_alter_table=ON")     # keep approval's FK pointing at 'case_action'
+        c.execute("ALTER TABLE case_action RENAME TO case_action_v0")
+        c.executescript(ddl)                     # recreates case_action with the current CHECK
+        c.execute("INSERT INTO case_action SELECT * FROM case_action_v0")
+        c.execute("PRAGMA legacy_alter_table=OFF")
+        c.execute("DROP TABLE case_action_v0")
+        c.execute("CREATE INDEX IF NOT EXISTS ca_case ON case_action(case_id)")
+        c.execute("PRAGMA foreign_keys=ON")
+    if reset:
+        c.execute("PRAGMA foreign_keys=OFF")
+        for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+            c.execute('DELETE FROM "%s"' % t)
+        c.execute("PRAGMA foreign_keys=ON")
+    if not one(c, "SELECT party_id FROM party LIMIT 1"):
+        for p in PARTY_SEED:
+            c.execute("INSERT INTO party VALUES(?,?,?,?,?,?,?,?)", p[:7] + (jd(p[7]),))
+    # a run left 'queued'/'running' by a dead process is honestly marked, never lost
+    c.execute("UPDATE agent_run SET outcome='interrupted', finished_at=? WHERE outcome IN ('queued','running')", (now(),))
+    c.commit()
     return c
 
 def rows(c, sql, args=()):
@@ -103,14 +129,24 @@ def _redact_str(s):
         return raw
     return PAN_RE.sub(repl, s)
 
+def _redact_val(v):
+    if isinstance(v, str):
+        return _redact_str(v)
+    if isinstance(v, dict):
+        return redact(v)
+    if isinstance(v, list):
+        return [_redact_val(x) for x in v]
+    return v
+
 def redact(payload):
-    """Drop CVV/PIN/track; replace any card number (Luhn) with token + last 4."""
+    """Drop CVV/PIN/track; replace any card number (Luhn) with token + last 4.
+    Recurses into nested dicts/lists — intake payloads are arbitrary JSON."""
     p = dict(payload)
     for k in list(p.keys()):
         if k.lower() in ("cvv", "cvc", "pin", "track", "track2"):
             del p[k]
-        elif isinstance(p[k], str):
-            p[k] = _redact_str(p[k])
+        else:
+            p[k] = _redact_val(p[k])
     return p
 
 # ---------------------------------------------------------------- read tools
@@ -162,8 +198,9 @@ def upsert_evidence(c, cid, kind, assertion_type, payload, source=None, effectiv
     # a correction: the same real-world object (same tracking number) with new
     # content supersedes the earlier version — which is kept, never deleted.
     if not supersedes and payload.get("tracking"):
-        prior = one(c, "SELECT evidence_id FROM evidence_item WHERE case_id=? AND kind=? AND status='active' AND payload LIKE ?",
-                    (cid, kind, "%" + jd({"tracking": payload["tracking"]})[1:-1] + "%"))
+        prior = one(c, "SELECT evidence_id FROM evidence_item WHERE case_id=? AND kind=? AND status='active' "
+                       "AND json_extract(payload,'$.tracking')=?",
+                    (cid, kind, payload["tracking"]))
         if prior:
             supersedes = prior["evidence_id"]
     if supersedes:
@@ -182,22 +219,28 @@ def upsert_evidence(c, cid, kind, assertion_type, payload, source=None, effectiv
 
 def rebuild_timeline(c, cid):
     # new version derived from the active evidence; previous versions are kept.
-    ver = timeline_version(c, cid) + 1
     EVENT_KINDS = {"transaction_event": "Transaction authorised",
                    "delivery_record": "Carrier records the parcel delivered and signed",
                    "auth_event": "Cardholder authentication recorded"}
     ev = [e for e in list_evidence(c, cid) if e["kind"] in EVENT_KINDS]
     ev.sort(key=lambda e: e["effective_at"] or e["received_at"])
+    items = []
     for e in ev:
         p = jl(e["payload"])
         desc = EVENT_KINDS[e["kind"]]
         if e["kind"] == "transaction_event":
             desc = "Transaction authorised — %s %s at %s" % (p.get("amount"), p.get("currency"), p.get("merchant"))
+        items.append((e["effective_at"], desc, e["evidence_id"]))
+    clear_reeval(c, cid, "timeline")            # re-checked either way
+    from collections import Counter             # order-insensitive: NULL dates sort differently in SQL vs Python
+    if items and Counter((a, d) for a, d, _ in items) == \
+            Counter((t["occurred_at"], t["description"]) for t in get_timeline(c, cid)):
+        return                                   # nothing changed — no version churn
+    ver = timeline_version(c, cid) + 1
+    for at, desc, eid in items:
         c.execute("""INSERT INTO timeline_event(timeline_event_id,case_id,occurred_at,description,derived_from,version)
-                     VALUES(?,?,?,?,?,?)""",
-                  (uid(), cid, e["effective_at"], desc, jd([e["evidence_id"]]), ver))
+                     VALUES(?,?,?,?,?,?)""", (uid(), cid, at, desc, jd([eid]), ver))
     log_audit(c, cid, "timeline-reconstruction", "timeline.rebuilt", "version %d — previous kept" % ver)
-    clear_reeval(c, cid, "timeline")
 
 def upsert_hypothesis(c, cid, statement, stance):
     h = one(c, "SELECT * FROM hypothesis WHERE case_id=? AND statement=?", (cid, statement))
@@ -275,10 +318,16 @@ def clear_reeval(c, cid, scope):
 
 # ---------------------------------------------------------------- users & roles
 USERS = {
-    "lead":  {"name": "Team Lead", "role": "team_lead"},
-    "user1": {"name": "User 1",    "role": "analyst"},
-    "user2": {"name": "User 2",    "role": "analyst"},
+    "lead":    {"name": "S. Iyer",   "role": "team_lead", "title": "Team lead"},
+    "user1":   {"name": "R. Mehta",  "role": "analyst",   "title": "Dispute analyst"},
+    "user2":   {"name": "A. Okafor", "role": "analyst",   "title": "Dispute analyst"},
+    "ops":     {"name": "J. Cruz",   "role": "ops",       "title": "Ops manager"},
+    "auditor": {"name": "Auditor",   "role": "auditor",   "title": "Auditor"},
 }
+
+def can_work(user_key):
+    """Ops and audit read the book; only analysts and the lead act on it."""
+    return USERS.get(user_key, {}).get("role") in ("analyst", "team_lead")
 
 # Which role may approve each action type. Money-moving needs the team lead.
 DEFAULT_POLICY = {
@@ -287,33 +336,60 @@ DEFAULT_POLICY = {
     "raise_chargeback":      "team_lead",
     "submit_representment":  "team_lead",
     "close_case":            "team_lead",
+    "record_decision":       "analyst",
+    "deny_dispute":          "team_lead",
+    "write_off":             "team_lead",
 }
+DECISION_LEAD_LIMIT = 500.0   # ponytail: one threshold; per-currency tiers when a real book needs them
+WRITE_OFF_LIMIT = 25.0        # below cost-to-work: a chargeback costs more to raise than it recovers
 
 def role_allows(role, needed):
     return role == "team_lead" or role == needed   # a team lead can approve anything
 
 # ---------------------------------------------------------------- reference data (configurable)
+# Per reason code: required evidence, window, permitted actions — and what the
+# case is actually ABOUT: the competing hypotheses, which evidence kinds back or
+# weaken each side, and what counts as a contradiction. All editable in
+# Administration; no code change to support a new reason code.
 DEFAULT_RULES = {
     "13.1": {"text": "Services not received", "required": ["delivery_record"], "window_days": 30,
-             "actions": ["request_evidence", "raise_chargeback", "submit_representment"]},
+             "actions": ["request_evidence", "raise_chargeback"],
+             "hypotheses": [["Goods were not delivered to the customer", "customer_favour"],
+                            ["The merchant delivered and the customer received the goods", "merchant_favour"]],
+             "links": {"customer_statement": [["customer_favour", "supports", 1.0]],
+                       "delivery_record": [["merchant_favour", "supports", 1.0],
+                                           ["customer_favour", "weakens", 1.0]]},
+             "contradiction": {"between": ["customer_statement", "delivery_record"],
+                               "when": {"kind": "delivery_record", "field": "status", "value": "delivered"},
+                               "text": "cardholder states not received; delivery record shows delivered"}},
     "13.3": {"text": "Not as described", "required": ["correspondence"], "window_days": 30,
-             "actions": ["request_evidence", "raise_chargeback"]},
+             "actions": ["request_evidence", "raise_chargeback"],
+             "hypotheses": [["The goods or service were not as described", "customer_favour"],
+                            ["The goods matched the description at sale", "merchant_favour"]],
+             "links": {"customer_statement": [["customer_favour", "supports", 1.0]],
+                       "merchant_record": [["merchant_favour", "supports", 1.0]]}},
     "10.4": {"text": "Fraud — card absent", "required": ["auth_event"], "window_days": 30,
-             "actions": ["raise_chargeback"]},
+             "actions": ["raise_chargeback"],
+             "hypotheses": [["The cardholder did not authorise the transaction", "customer_favour"],
+                            ["The cardholder authorised the transaction", "merchant_favour"]],
+             "links": {"customer_statement": [["customer_favour", "supports", 1.0]],
+                       "auth_event": [["merchant_favour", "supports", 1.0],
+                                      ["customer_favour", "weakens", 1.0]]},
+             "contradiction": {"between": ["customer_statement", "auth_event"],
+                               "when": {"kind": "auth_event", "field": "method", "value": "3DS"},
+                               "text": "cardholder denies the transaction; a 3DS authentication is on file"}},
     "12.6": {"text": "Duplicate processing", "required": ["transaction_event"], "window_days": 30,
-             "actions": ["raise_chargeback"]},
+             "actions": ["raise_chargeback"],
+             "hypotheses": [["The transaction was processed twice", "customer_favour"],
+                            ["The two postings are distinct transactions", "merchant_favour"]],
+             "links": {"customer_statement": [["customer_favour", "supports", 1.0]]}},
 }
 
-def _ensure_config(c):
-    c.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-
 def _config_get(c, key, default):
-    _ensure_config(c)
     r = one(c, "SELECT value FROM app_config WHERE key=?", (key,))
     return jl(r["value"]) if r else default
 
 def _config_set(c, key, value):
-    _ensure_config(c)
     c.execute("INSERT INTO app_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               (key, jd(value)))
 
@@ -461,10 +537,11 @@ def _register_from_action(c, a):
             register_request(c, a["case_id"], "cardholder", ["correspondence"],
                              jl(a["params"]).get("summary"), a["action_id"])
 
-def execute_action(c, aid, mode="ok"):
+def execute_action(c, aid, mode="ok", user_key="lead"):
     a = one(c, "SELECT * FROM case_action WHERE action_id=?", (aid,))
     if not a:
         return {"error": "no such action"}
+    exec_by = USERS.get(user_key, {}).get("name", "system")
     if a["status"] == "done":
         return {"status": "done", "note": "already executed — runs once", "external_ref": a["external_ref"]}
     ap = one(c, "SELECT * FROM approval WHERE action_id=? AND decision='approve'", (aid,))
@@ -476,7 +553,8 @@ def execute_action(c, aid, mode="ok"):
     if led and led["status"] == "completed":
         c.execute("UPDATE case_action SET status='done', external_ref=?, result=?, executed_at=? WHERE action_id=?",
                   (led["ref"], jd({"reconciled": True}), now(), aid))
-        log_audit(c, a["case_id"], "orchestration", "action.reconciled", "external state was completed; no second effect")
+        log_audit(c, a["case_id"], "orchestration", "action.reconciled",
+                  "external state was completed; no second effect (retried by %s)" % exec_by)
         _register_from_action(c, a)
         return {"status": "done", "reconciled": True, "external_ref": led["ref"]}
     c.execute("UPDATE case_action SET status='executing' WHERE action_id=?", (aid,))
@@ -485,7 +563,7 @@ def execute_action(c, aid, mode="ok"):
         led = one(c, "SELECT * FROM external_ledger WHERE idempotency_key=?", (key,))
         c.execute("UPDATE case_action SET status='done', external_ref=?, result=?, executed_at=? WHERE action_id=?",
                   (led["ref"], jd({"ok": True}), now(), aid))
-        log_audit(c, a["case_id"], "orchestration", "action.executed", a["type"])
+        log_audit(c, a["case_id"], "orchestration", "action.executed", "%s by %s" % (a["type"], exec_by))
         _register_from_action(c, a)
         return {"status": "done", "external_ref": led["ref"]}
     if res == "timeout":
@@ -514,6 +592,8 @@ def review_interpretation(c, cid, user_key, note=""):
     user = USERS.get(user_key)
     if not user:
         return {"error": "unknown user"}
+    if not can_work(user_key):
+        return {"error": "%s is a read-only role" % user["title"], "code": 403}
     if not get_case(c, cid):
         return {"error": "no such case"}
     log_audit(c, cid, user["name"], "interpretation.reviewed",
@@ -526,14 +606,43 @@ def record_decision(c, cid, outcome, user_key="user1"):
     user = USERS.get(user_key)
     if not user:
         return {"error": "unknown user"}
+    case = get_case(c, cid)
+    if not case:
+        return {"error": "no such case"}
+    # authority tiering: the policy names the base role; high value needs the lead
+    needed = get_policy(c).get("record_decision", "analyst")
+    if (case["amount"] or 0) > DECISION_LEAD_LIMIT:
+        needed = "team_lead"
+    if not role_allows(user["role"], needed):
+        return {"error": "a decision on this case needs a %s — you are signed in as %s (%s)"
+                % (needed.replace("_", " "), user["name"], user["role"]), "code": 403}
     r = interpretation_reviewed(c, cid)
     if not r:
         return {"error": "review the interpretation first — read the assessment and both narratives, then mark them reviewed"}
     if not r["current"]:
         return {"error": "the record changed after the last review — review the interpretation again before deciding"}
-    c.execute("UPDATE dispute_case SET liability_outcome=?, stage='resolved', status='closed', updated_at=? WHERE case_id=?",
-              (outcome, now(), cid))
-    log_audit(c, cid, user["name"], "liability.recorded", outcome + " — case closed")
+    if r["by"] == user["name"]:
+        return {"error": "four-eyes: the person who reviewed the interpretation cannot also record the decision", "code": 403}
+    # cardholder favour raises a chargeback: the network round (re-presentment,
+    # pre-arb) is still live, so the case stays open until record_network_outcome.
+    # Denial and no-recovery ARE terminal internally.
+    terminal = outcome != "Cardholder favour"
+    c.execute("UPDATE dispute_case SET liability_outcome=?, stage=?, status=?, updated_at=? WHERE case_id=?",
+              (outcome, "resolved" if terminal else "actioned",
+               "closed" if terminal else "active", now(), cid))
+    # the basis of the determination, snapshotted for the examiner
+    log_audit(c, cid, user["name"], "liability.recorded", outcome + " — case closed",
+              ref={"timeline_version": timeline_version(c, cid),
+                   "reviewed_by": r["by"],
+                   "positions": [{"statement": h["statement"], "stance": h["stance"], "confidence": h["confidence"]}
+                                 for h in rows(c, "SELECT statement, stance, confidence FROM hypothesis WHERE case_id=?", (cid,))]})
+    # provisional-credit accounting hooks (GL posting itself is out of scope)
+    if outcome == "Merchant favour":
+        log_audit(c, cid, "orchestration", "provisional_credit.reversed",
+                  "claim denied — provisional credit reversed with notice; the denial letter carries the evidence basis")
+    else:
+        log_audit(c, cid, "orchestration", "provisional_credit.final",
+                  "credit made permanent — recovery or write-off posting per outcome")
     # resolution progresses through the same register every other ask used
     if outcome == "Cardholder favour":
         register_request(c, cid, "network", ["correspondence"], "resolution: file the chargeback with the network")
@@ -541,6 +650,25 @@ def record_decision(c, cid, outcome, user_key="user1"):
     log_audit(c, cid, "orchestration", "resolution.progressed",
               "outcome notice and filings registered per party — the register carries the resolution too")
     return {"status": "recorded", "by": user["name"]}
+
+def record_network_outcome(c, cid, result, user_key="lead"):
+    """The network round's result — recorded separately from the internal
+    liability decision, so won/lost data stays honest for retraining."""
+    if result not in ("won", "lost"):
+        return {"error": "result must be won or lost"}
+    user = USERS.get(user_key)
+    if not user:
+        return {"error": "unknown user", "code": 403}
+    case = get_case(c, cid)
+    if not case:
+        return {"error": "no such case"}
+    if not case["liability_outcome"]:
+        return {"error": "no internal decision on file yet"}
+    if case["status"] == "closed":
+        return {"note": "already closed"}
+    c.execute("UPDATE dispute_case SET stage='resolved', status='closed', updated_at=? WHERE case_id=?", (now(), cid))
+    log_audit(c, cid, user["name"], "network.outcome", "chargeback %s — case closed" % result)
+    return {"status": "closed", "network_outcome": result}
 
 def what_changed(c, cid):
     """The visible delta after the record changed: the latest timeline version
@@ -657,16 +785,28 @@ def duplicate_detection(c, cid):
         if k in seen:
             c.execute("UPDATE evidence_item SET status='duplicate', duplicate_of=? WHERE evidence_id=?",
                       (seen[k], e["evidence_id"]))
+            open_gap(c, cid, "duplicate", "same %s stated twice — first kept" % k[0],
+                     {"text": "same %s stated twice — first kept" % k[0],
+                      "evidence_id": e["evidence_id"], "duplicate_of": seen[k]})
             log_audit(c, cid, "duplicate-detection", "evidence.duplicate", "same %s as an earlier item" % k[0])
         else:
             seen[k] = e["evidence_id"]
 
+def _kind_satisfied(evs, kind, reason_code):
+    """Is a required evidence kind really met? 12.6 (duplicate processing) needs
+    BOTH transactions — one posting cannot prove a duplicate."""
+    items = [e for e in evs if e["kind"] == kind]
+    if reason_code == "12.6" and kind == "transaction_event":
+        refs = {(jl(e["payload"]) or {}).get("ledger_ref") or e["content_hash"] for e in items}
+        return len(refs) >= 2
+    return bool(items)
+
 def conflict_detection(c, cid):
     case = get_case(c, cid)
     rule = chargeback_rules(c, case["reason_code"])
-    kinds = {e["kind"] for e in list_evidence(c, cid)}
+    evs = list_evidence(c, cid)
     for req in rule["required"]:
-        if req not in kinds:
+        if not _kind_satisfied(evs, req, case["reason_code"]):
             open_gap(c, cid, "missing", "%s not yet provided" % req, {"required": req})
         else:
             # requirement now met — resolve the matching missing gap
@@ -687,26 +827,27 @@ def conflict_detection(c, cid):
             if age > 30:
                 open_gap(c, cid, "stale", "%s is %d days older than the newest evidence" % (e["kind"], age),
                          {"evidence_id": e["evidence_id"]})
-    # contradiction: delivery says delivered, customer says not received
-    ev = {e["kind"]: jl(e["payload"]) for e in list_evidence(c, cid)}
-    if "delivery_record" in ev and "customer_statement" in ev:
-        if ev["delivery_record"].get("status") == "delivered":
-            open_gap(c, cid, "contradiction", "cardholder states not received; delivery record shows delivered",
-                     {"between": ["customer_statement", "delivery_record"]})
-            flag_reeval(c, cid, "hypotheses", "delivery record conflicts with cardholder statement")
+    # contradiction: rule-defined — which kinds disagree, and the fact that trips it
+    cd = rule.get("contradiction")
+    ev = {e["kind"]: jl(e["payload"]) for e in evs}
+    if cd and all(k in ev for k in cd["between"]):
+        w = cd.get("when")
+        if not w or (ev.get(w["kind"]) or {}).get(w["field"]) == w["value"]:
+            open_gap(c, cid, "contradiction", cd["text"], {"between": cd["between"]})
+            flag_reeval(c, cid, "hypotheses", cd["text"])
 
 def hypothesis_management(c, cid):
-    ids = {}
-    for stmt, stance in CANDIDATE_HYPS:
-        ids[stmt] = upsert_hypothesis(c, cid, stmt, stance)
+    case = get_case(c, cid)
+    rule = chargeback_rules(c, case["reason_code"])
+    pairs = rule.get("hypotheses") or CANDIDATE_HYPS      # unknown codes fall back
+    ids = {stance: upsert_hypothesis(c, cid, stmt, stance) for stmt, stance in pairs}
     ev = {e["kind"]: e for e in list_evidence(c, cid)}
-    h_not = ids[CANDIDATE_HYPS[0][0]]
-    h_del = ids[CANDIDATE_HYPS[1][0]]
-    if "customer_statement" in ev:
-        link_evidence(c, h_not, ev["customer_statement"]["evidence_id"], "supports", 1.0)
-    if "delivery_record" in ev:
-        link_evidence(c, h_del, ev["delivery_record"]["evidence_id"], "supports", 1.0)
-        link_evidence(c, h_not, ev["delivery_record"]["evidence_id"], "weakens", 1.0)
+    for kind, links in (rule.get("links") or {}).items():
+        if kind not in ev:
+            continue
+        for stance, polarity, weight in links:
+            if stance in ids:
+                link_evidence(c, ids[stance], ev[kind]["evidence_id"], polarity, weight)
     score_hypotheses(c, cid)
     # track which account leads; log only when it moves, so the trail shows every turn
     hs = rows(c, "SELECT stance, confidence FROM hypothesis WHERE case_id=?", (cid,))
@@ -723,8 +864,24 @@ def hypothesis_management(c, cid):
 def deadline_tracking(c, cid):
     case = get_case(c, cid)
     rule = chargeback_rules(c, case["reason_code"])
-    due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=rule["window_days"])).date().isoformat()
+    # the clock anchors on the event, not on when we happen to run: the disputed
+    # transaction's date starts the window (falling back to case open).
+    # ponytail: 13.1 formally counts from expected delivery — add when modelled.
+    anchor = next((e["effective_at"][:10] for e in list_evidence(c, cid)
+                   if e["kind"] == "transaction_event" and e["effective_at"]), None) or case["opened_at"][:10]
+    try:
+        due = (datetime.date.fromisoformat(anchor) + datetime.timedelta(days=rule["window_days"])).isoformat()
+    except ValueError:
+        due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=rule["window_days"])).date().isoformat()
     set_deadline(c, cid, "representment_window", due)
+    # regulatory clocks (Reg E flavour), anchored on the case open date:
+    # ponytail: 10 business days ~ 14 calendar; a business-day calendar when it matters
+    try:
+        opened = datetime.date.fromisoformat(case["opened_at"][:10])
+        set_deadline(c, cid, "response_sla", (opened + datetime.timedelta(days=14)).isoformat())   # provisional-credit decision
+        set_deadline(c, cid, "evidence_due", (opened + datetime.timedelta(days=45)).isoformat())   # investigation limit
+    except ValueError:
+        pass
 
 def _days_left(c, cid):
     d = one(c, "SELECT due_at FROM deadline WHERE case_id=? AND kind='representment_window' AND status='pending'", (cid,))
@@ -735,6 +892,18 @@ def _days_left(c, cid):
         return max(0, (due - datetime.datetime.now(datetime.timezone.utc).date()).days)
     except Exception:
         return 30
+
+def days_left_map(c):
+    """Representment days-left for the whole book in one query — the list views
+    and claim_next use this instead of per-case _days_left."""
+    out = {}
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    for d in rows(c, "SELECT case_id, due_at FROM deadline WHERE kind='representment_window' AND status='pending'"):
+        try:
+            out[d["case_id"]] = max(0, (datetime.date.fromisoformat(d["due_at"][:10]) - today).days)
+        except ValueError:
+            pass
+    return out
 
 def _position_conf(c, cid):
     """(merchant_conf, cardholder_conf) in 0..1 from the scored positions."""
@@ -756,13 +925,19 @@ def score_candidates(c, cid):
     gaps = list_gaps(c, cid, open_only=True)
     contradiction = next((g for g in gaps if g["kind"] == "contradiction"), None)
     missing = next((g for g in gaps if g["kind"] == "missing"), None)
-    kinds = {e["kind"] for e in list_evidence(c, cid)}
-    has_required = all(k in kinds for k in rule["required"])
+    evs = list_evidence(c, cid)
+    has_required = all(_kind_satisfied(evs, k, case["reason_code"]) for k in rule["required"])
     mc, cc = _position_conf(c, cid)
     days = _days_left(c, cid)
     urgency = 2.0 if days < 2 else 1.5 if days < 7 else 1.2 if days < 15 else 1.0
-    amount_factor = min((case["amount"] or 0) / 500.0, 1.0)
+    import math
+    # log scale so a $50k case outranks a $500 one (saturates ~$50k, floor kept in the score)
+    amount_factor = min(math.log10(1.0 + (case["amount"] or 0)) / 4.7, 1.0)
     policy = get_policy(c)
+    # liability shift: a successful 3DS authentication removes the fraud chargeback right
+    auth = next((jl(e["payload"]) for e in evs if e["kind"] == "auth_event"), None)
+    three_ds_ok = bool(auth) and auth.get("method") == "3DS" and \
+        auth.get("result") in ("frictionless", "challenge", "success")
 
     base = {"has_required": 1.0 if has_required else 0.0,
             "contradiction_open": 1.0 if contradiction else 0.0,
@@ -770,11 +945,12 @@ def score_candidates(c, cid):
             "amount_norm": amount_factor, "days_left_norm": min(days / 30.0, 1.0)}
 
     candidates, blocked = [], []
-    def consider(atype, summary, purpose):
+    def consider(atype, summary, purpose, p=None):
         f = dict(base)
         for a in ("request_evidence", "raise_chargeback", "submit_representment", "send_correspondence"):
             f["b_" + a] = 1.0 if a == atype else 0.0
-        p = ml.predict(c, f)
+        if p is None:                     # actions outside the model's menu pass p in
+            p = ml.predict(c, f)
         authority = 0.9 if policy.get(atype, "team_lead") == "team_lead" else 1.0
         score = p * max(amount_factor, 0.05) * urgency * authority
         candidates.append({"atype": atype, "summary": summary, "purpose": purpose,
@@ -797,13 +973,29 @@ def score_candidates(c, cid):
     if missing:
         req = jl(missing["about"]).get("required", "evidence")
         consider("request_evidence", "Request %s from the merchant" % req.replace("_", " "), "merchant-" + req)
+    # below cost-to-work: closing the case IS the economically correct step
+    if 0 < (case["amount"] or 0) <= WRITE_OFF_LIMIT:
+        consider("write_off", "Write off — %.2f %s is below cost to work" % (case["amount"], case["currency"] or ""),
+                 "write-off", p=1.0)
+    # issuer side: denying the claim is the merchant-wins move. (Representment is
+    # the acquirer's move — the action type stays for acquirer-side rule configs.)
+    if has_required and not contradiction and mc >= 0.7:
+        consider("deny_dispute", "Deny the dispute — the record supports the merchant", "deny", p=mc)
+    elif mc >= 0.5:
+        why = ("an open contradiction" if contradiction else
+               "required evidence missing" if not has_required else
+               "a merchant position below 70%")
+        blocked.append({"atype": "deny_dispute", "why": "blocked by " + why})
     if "raise_chargeback" in rule["actions"]:
-        if has_required and cc >= 0.7:
+        if case["reason_code"] == "10.4" and three_ds_ok:
+            blocked.append({"atype": "raise_chargeback",
+                            "why": "liability shift — successful 3DS authentication on file removes the fraud chargeback right"})
+        elif has_required and cc >= 0.7:
             consider("raise_chargeback", "Raise chargeback under reason %s" % case["reason_code"], "chargeback")
         else:
             blocked.append({"atype": "raise_chargeback",
                             "why": "needs required evidence and a cardholder position of 70% or more"})
-    if "submit_representment" in rule["actions"]:
+    if "submit_representment" in rule["actions"]:   # acquirer-side config only
         if has_required and not contradiction and mc >= 0.7:
             consider("submit_representment", "Submit representment with compelling evidence", "representment")
         else:
@@ -857,31 +1049,14 @@ PARTY_SEED = [
      ["delivery_record"]),
 ]
 
-def _ensure_register(c):
-    c.execute("""CREATE TABLE IF NOT EXISTS party (
-        party_id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, channel TEXT NOT NULL,
-        authority TEXT NOT NULL, sla_days INTEGER NOT NULL DEFAULT 7, endpoint TEXT,
-        serves_kinds TEXT NOT NULL DEFAULT '[]')""")
-    c.execute("""CREATE TABLE IF NOT EXISTS service_request (
-        request_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, party_id TEXT NOT NULL,
-        kinds TEXT NOT NULL, purpose TEXT, status TEXT NOT NULL DEFAULT 'sent',
-        action_id TEXT, sent_at TEXT NOT NULL, due_at TEXT NOT NULL,
-        fulfilled_at TEXT, fulfilled_by TEXT NOT NULL DEFAULT '[]', chase_count INTEGER NOT NULL DEFAULT 0)""")
-    if not one(c, "SELECT party_id FROM party LIMIT 1"):
-        for p in PARTY_SEED:
-            c.execute("INSERT INTO party VALUES(?,?,?,?,?,?,?,?)", p[:7] + (jd(p[7]),))
-
 def get_party(c, pid):
-    _ensure_register(c)
     return one(c, "SELECT * FROM party WHERE party_id=?", (pid,))
 
 def list_parties(c):
-    _ensure_register(c)
     return [{**p, "serves_kinds": jl(p["serves_kinds"])} for p in rows(c, "SELECT * FROM party")]
 
 def register_request(c, cid, party_id, kinds, purpose, action_id=None):
     """One open ask per (case, party, kind). Re-asking returns the existing one."""
-    _ensure_register(c)
     party = get_party(c, party_id)
     if not party:
         return None
@@ -897,7 +1072,6 @@ def register_request(c, cid, party_id, kinds, purpose, action_id=None):
     return rid
 
 def list_requests(c, cid):
-    _ensure_register(c)
     out = []
     for r in rows(c, "SELECT sr.*, p.name party_name, p.channel FROM service_request sr JOIN party p ON p.party_id=sr.party_id WHERE case_id=? ORDER BY sent_at", (cid,)):
         out.append({**r, "kinds": jl(r["kinds"]), "fulfilled_by": jl(r["fulfilled_by"]),
@@ -910,7 +1084,6 @@ _SUPPLIER_PARTY = {"customer": ["cardholder"], "merchant": ["merchant"], "carrie
 def match_fulfilment(c, cid, evidence_id, kind, supplied_by, supersedes=None):
     """Link arriving evidence to the open ask it answers. A correction re-links;
     it never reopens a request."""
-    _ensure_register(c)
     if supersedes:      # correction: re-point any fulfilment at the new version
         for r in rows(c, "SELECT * FROM service_request WHERE case_id=?", (cid,)):
             fb = jl(r["fulfilled_by"])
@@ -1048,33 +1221,38 @@ def add_evidence(c, cid, kind, fields, supplied_by="analyst", image_name=None, i
         return {"error": "unknown evidence kind: %s" % kind}
     if not get_case(c, cid):
         return {"error": "no such case"}
-    lock = case_lock(cid); lock.acquire()
-    payload = {k: v for k, v in (fields or {}).items() if v not in (None, "")}
-    if image_bytes:
-        os.makedirs(UPLOADS, exist_ok=True)
-        ext = os.path.splitext(image_name or "")[1].lower()
-        if ext not in (".jpg", ".jpeg", ".png", ".webp"):
-            ext = ".jpg"
-        fname = uid() + ext
-        with open(os.path.join(UPLOADS, fname), "wb") as f:
-            f.write(image_bytes)
-        payload["image"] = "uploads/" + fname
-    assertion = "user_input" if supplied_by == "customer" else "recorded_fact"
-    authority = {"customer": "first_party", "merchant": "second_party",
-                 "switch": "authoritative"}.get(supplied_by, "second_party")
-    eid = assemble_evidence(c, cid, kind, assertion, payload,
-                            {"system": "dispute_portal", "authority": authority, "supplied_by": supplied_by},
-                            payload.get("effective_at") or None)
-    run_journey(c, cid)             # re-reconcile with the new evidence
-    c.commit()
-    lock.release()
+    with case_lock(cid):            # released even if the journey throws
+        payload = {k: v for k, v in (fields or {}).items() if v not in (None, "")}
+        if image_bytes:
+            os.makedirs(UPLOADS, exist_ok=True)
+            ext = os.path.splitext(image_name or "")[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+                ext = ".jpg"
+            fname = uid() + ext
+            with open(os.path.join(UPLOADS, fname), "wb") as f:
+                f.write(image_bytes)
+            payload["image"] = "uploads/" + fname
+        assertion = "user_input" if supplied_by == "customer" else "recorded_fact"
+        authority = {"customer": "first_party", "merchant": "second_party",
+                     "switch": "authoritative"}.get(supplied_by, "second_party")
+        eid = assemble_evidence(c, cid, kind, assertion, payload,
+                                {"system": "dispute_portal", "authority": authority, "supplied_by": supplied_by},
+                                payload.get("effective_at") or None)
+        run_journey(c, cid)         # re-reconcile with the new evidence
+        c.commit()
     return {"evidence_id": eid}
 
 def open_case(c, cid, **k):
-    c.execute("""INSERT INTO dispute_case(case_id,customer_id,card_id,disputed_txn_id,reason_code,amount,currency,stage,opened_at,updated_at)
-                 VALUES(?,?,?,?,?,?,?, 'gathering', ?, ?)""",
-              (cid, k["customer_id"], k["card_id"], k["txn"], k["reason"], k["amount"], k["ccy"], now(), now()))
+    c.execute("""INSERT INTO dispute_case(case_id,customer_id,card_id,disputed_txn_id,arn,reason_code,amount,currency,stage,opened_at,updated_at)
+                 VALUES(?,?,?,?,?,?,?,?, 'gathering', ?, ?)""",
+              (cid, k["customer_id"], k["card_id"], k["txn"], k.get("arn"), k["reason"], k["amount"], k["ccy"], now(), now()))
     log_audit(c, cid, "intake", "case.raised", k.get("reason"))
+    log_audit(c, cid, "orchestration", "provisional_credit.posted",
+              "provisional credit posted pending investigation (accounting hook — GL posting out of scope)")
+    if k["reason"] == "10.4":   # a fraud claim has side effects beyond the case
+        log_audit(c, cid, "orchestration", "card.block_requested",
+                  "fraud reason code — card block/reissue and scheme fraud report flagged for the card team")
+        register_request(c, cid, "network", ["correspondence"], "scheme fraud report (TC40/SAFE)")
 
 def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_at, material=True):
     eid = upsert_evidence(c, cid, kind, assertion_type, payload, source, effective_at)
@@ -1083,15 +1261,30 @@ def assemble_evidence(c, cid, kind, assertion_type, payload, source, effective_a
     return eid
 
 # ---------------------------------------------------------------- agent run log
-def _ensure_runs(c):
-    c.execute("""CREATE TABLE IF NOT EXISTS agent_run (
-        run_id TEXT PRIMARY KEY, case_id TEXT, intake_id TEXT, agent TEXT NOT NULL,
-        started_at TEXT NOT NULL, finished_at TEXT, turns INTEGER, tool_calls INTEGER,
-        tokens_in INTEGER, tokens_out INTEGER, outcome TEXT, transcript TEXT)""")
+def start_agent_run(c, agent, case_id=None, intake_id=None):
+    """Create the run row up front — the run is a durable job, not a response.
+    (ii-agent pattern: the event log exists before the run finishes.)"""
+    rid = uid()
+    c.execute("""INSERT INTO agent_run(run_id,case_id,intake_id,agent,started_at,turns,tool_calls,
+                 tokens_in,tokens_out,outcome,transcript) VALUES(?,?,?,?,?,0,0,0,0,'running','[]')""",
+              (rid, case_id, intake_id, agent, now()))
+    c.commit()
+    return rid
+
+def update_agent_run(c, rid, transcript, outcome=None, turns=0, tool_calls=0, tokens_in=0, tokens_out=0):
+    """Incremental persistence: called each turn; with outcome set it finalises.
+    A crash mid-run leaves the partial transcript, not nothing."""
+    if outcome:
+        c.execute("""UPDATE agent_run SET transcript=?, turns=?, tool_calls=?, tokens_in=?, tokens_out=?,
+                     outcome=?, finished_at=? WHERE run_id=?""",
+                  (jd(transcript), turns, tool_calls, tokens_in, tokens_out, outcome, now(), rid))
+    else:
+        c.execute("UPDATE agent_run SET transcript=?, turns=?, tool_calls=?, tokens_in=?, tokens_out=? WHERE run_id=?",
+                  (jd(transcript), turns, tool_calls, tokens_in, tokens_out, rid))
+    c.commit()
 
 def record_agent_run(c, agent, transcript, outcome, case_id=None, intake_id=None,
                      started_at=None, turns=0, tool_calls=0, tokens_in=0, tokens_out=0):
-    _ensure_runs(c)
     rid = uid()
     c.execute("""INSERT INTO agent_run(run_id,case_id,intake_id,agent,started_at,finished_at,
                  turns,tool_calls,tokens_in,tokens_out,outcome,transcript)
@@ -1102,7 +1295,6 @@ def record_agent_run(c, agent, transcript, outcome, case_id=None, intake_id=None
     return rid
 
 def list_agent_runs(c, case_id=None):
-    _ensure_runs(c)
     q, args = "SELECT * FROM agent_run", ()
     if case_id:
         q, args = q + " WHERE case_id=?", (case_id,)
@@ -1112,7 +1304,6 @@ def list_agent_runs(c, case_id=None):
     return out
 
 def llm_metrics(c):
-    _ensure_runs(c)
     r = one(c, "SELECT COUNT(*) n, COALESCE(SUM(tokens_in),0) ti, COALESCE(SUM(tokens_out),0) tou, "
                "SUM(CASE WHEN outcome LIKE 'fell_back%' THEN 1 ELSE 0 END) fb FROM agent_run")
     return {"llm_runs": r["n"], "llm_tokens_in": r["ti"], "llm_tokens_out": r["tou"], "llm_fallbacks": r["fb"] or 0}
@@ -1191,6 +1382,8 @@ def claim_case(c, cid, user_key):
     user = USERS.get(user_key)
     if not user:
         return {"error": "unknown user"}
+    if not can_work(user_key):
+        return {"error": "%s is a read-only role" % user["title"], "code": 403}
     cur = c.execute("UPDATE dispute_case SET assigned_to=?, updated_at=? WHERE case_id=? AND assigned_to IS NULL AND status='active'",
                     (user_key, now(), cid))
     if cur.rowcount == 0:
@@ -1228,9 +1421,10 @@ def claim_next(c, user_key):
     """Pull-based balancing: take the most urgent unassigned case (fewest days
     left on its window, oldest first). Atomic per attempt, so two people pressing
     the button at once get two different cases."""
+    dl = days_left_map(c)
     candidates = sorted(
         rows(c, "SELECT case_id, opened_at FROM dispute_case WHERE status='active' AND assigned_to IS NULL"),
-        key=lambda r: (_days_left(c, r["case_id"]), r["opened_at"]))
+        key=lambda r: (dl.get(r["case_id"], 30), r["opened_at"]))
     for cand in candidates:
         r = claim_case(c, cand["case_id"], user_key)
         if r.get("status") == "claimed":
@@ -1238,31 +1432,69 @@ def claim_next(c, user_key):
             return r
     return {"error": "nothing unassigned to take"}
 
+def _next_case_id(c):
+    n = one(c, "SELECT MAX(CAST(SUBSTR(case_id,5) AS INTEGER)) m FROM dispute_case WHERE case_id LIKE 'DSP-%'")
+    return "DSP-%06d" % ((n["m"] or 100000) + 1)
+
 def raise_dispute(c, f, user_key):
     """Journey step 1, live: a person raises a new dispute; the journey starts."""
     user = USERS.get(user_key)
     if not user:
-        return {"error": "unknown user"}
+        return {"error": "unknown user", "code": 403}
+    if not can_work(user_key):
+        return {"error": "%s is a read-only role" % user["title"], "code": 403}
     for k in ("customer_id", "card_token", "txn_id", "amount", "reason_code"):
         if not f.get(k):
             return {"error": "missing field: " + k}
-    n = one(c, "SELECT MAX(CAST(SUBSTR(case_id,5) AS INTEGER)) m FROM dispute_case WHERE case_id LIKE 'DSP-%'")
-    cid = "DSP-%06d" % ((n["m"] or 100000) + 1)
+    cid = _next_case_id(c)
     open_case(c, cid, customer_id=f["customer_id"], card_id=f["card_token"], txn=f["txn_id"],
-              reason=f["reason_code"], amount=float(f["amount"]), ccy=f.get("currency", "USD"))
+              arn=f.get("arn"), reason=f["reason_code"], amount=float(f["amount"]), ccy=f.get("currency", "USD"))
     log_audit(c, cid, user["name"], "case.raised_by", "raised in the console")
     run_journey(c, cid)
     c.commit()
     return {"case_id": cid}
 
-# ---------------------------------------------------------------- A0 Intake Triage
-def _ensure_intake(c):
-    c.execute("""CREATE TABLE IF NOT EXISTS intake_item (
-        intake_id TEXT PRIMARY KEY, kind TEXT, payload TEXT NOT NULL,
-        supplied_by TEXT, source_system TEXT, received_at TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending', matched_case TEXT, match_reason TEXT,
-        resolved_by TEXT, resolved_at TEXT)""")
+# ---------------------------------------------------------------- cardholder channel
+def cardholder_view(c, cid):
+    """What the cardholder may see of their own case: status, their open asks,
+    their clock — NEVER the merchant's evidence, the assessment, or the briefs.
+    Minimisation is enforced here, server-side, not by the screen."""
+    case = get_case(c, cid)
+    if not case:
+        return None
+    clock = one(c, "SELECT due_at FROM deadline WHERE case_id=? AND kind='response_sla'", (cid,))
+    return {"case_id": cid, "txn_id": case["disputed_txn_id"],
+            "stage": case["stage"], "status": case["status"],
+            "amount": case["amount"], "currency": case["currency"],
+            "reason_text": chargeback_rules(c, case["reason_code"])["text"],
+            "outcome": case["liability_outcome"],
+            "provisional_credit_by": clock["due_at"] if clock else None,
+            "open_asks": [{"asked_for": r["kinds"], "purpose": r["purpose"],
+                           "due": (r["due_at"] or "")[:10], "status": r["status"]}
+                          for r in list_requests(c, cid)
+                          if r["party_id"] == "cardholder" and r["status"] in ("sent", "chased")]}
 
+def raise_from_cardholder(c, f, statement_text=""):
+    """The cardholder channel raises a dispute. Fixed schema only — the free
+    text becomes the statement (redacted on intake), never instructions."""
+    for k in ("customer_id", "card_token", "txn_id", "amount", "reason_code"):
+        if not f.get(k):
+            return {"error": "missing field: " + k}
+    if f["reason_code"] not in get_rules(c):
+        return {"error": "unknown reason code %s" % f["reason_code"]}
+    cid = _next_case_id(c)
+    open_case(c, cid, customer_id=f["customer_id"], card_id=f["card_token"], txn=f["txn_id"],
+              arn=f.get("arn"), reason=f["reason_code"], amount=float(f["amount"]), ccy=f.get("currency", "USD"))
+    log_audit(c, cid, "Cardholder channel", "case.raised_by", "raised through the cardholder channel")
+    if statement_text:
+        assemble_evidence(c, cid, "customer_statement", "user_input", {"text": statement_text},
+                          {"system": "cardholder_channel", "authority": "first_party",
+                           "supplied_by": "customer"}, None)
+    run_journey(c, cid)
+    c.commit()
+    return {"case_id": cid}
+
+# ---------------------------------------------------------------- A0 Intake Triage
 def _classify_intake(payload):
     """Infer the evidence kind from the shape of the item."""
     p = payload
@@ -1289,15 +1521,19 @@ def _match_case(c, payload):
         r = one(c, "SELECT case_id FROM dispute_case WHERE disputed_txn_id=? AND status='active'", (payload["txn_id"],))
         if r:
             return r["case_id"], "exact", "transaction id %s" % payload["txn_id"]
+    if payload.get("arn"):
+        r = one(c, "SELECT case_id FROM dispute_case WHERE arn=? AND status='active'", (payload["arn"],))
+        if r:
+            return r["case_id"], "exact", "acquirer reference number %s" % payload["arn"]
     # tier 2 — strong: an order id or tracking number already in a case's evidence
     for key in ("order_id", "tracking"):
         val = payload.get(key)
         if not val:
             continue
-        needle = "%" + jd({key: val})[1:-1] + "%"     # e.g. %"order_id":"ORD-5567"%
+        # key comes from the fixed tuple above — safe to build the JSON path
         hits = rows(c, """SELECT DISTINCT e.case_id FROM evidence_item e JOIN dispute_case d ON d.case_id=e.case_id
-                          WHERE e.status='active' AND d.status='active' AND e.payload LIKE ?""",
-                    (needle,))
+                          WHERE e.status='active' AND d.status='active' AND json_extract(e.payload,'$.%s')=?""" % key,
+                    (val,))
         if len(hits) == 1:
             return hits[0]["case_id"], "strong", "%s %s already on the case" % (key.replace("_", " "), val)
         if len(hits) > 1:
@@ -1337,7 +1573,6 @@ def _attach_intake_locked(c, item, cid, how, by):
 
 def triage_intake(c, payload, kind=None, supplied_by="merchant", source_system="intake_feed"):
     """The A0 agent, deterministic: classify, match, attach-or-queue. Never guesses."""
-    _ensure_intake(c)
     payload = redact(payload)
     kind = kind if kind in EVIDENCE_KINDS else _classify_intake(payload)
     iid = uid()
@@ -1347,6 +1582,10 @@ def triage_intake(c, payload, kind=None, supplied_by="merchant", source_system="
     if cid and tier in ("exact", "strong"):
         _attach_intake(c, one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,)), cid,
                        "auto: %s" % reason, "A0 Intake Triage")
+        # a merchant credit resolves the dispute without a chargeback — propose the close
+        if any(k in payload for k in ("credit", "refund", "credit_amount")):
+            propose_action(c, cid, "close_case",
+                           {"summary": "Merchant credit received — close as credit-resolved"}, "credit-resolved")
         c.commit()
         return {"intake_id": iid, "status": "attached", "case_id": cid, "reason": reason}
     # weak / ambiguous / none -> a person decides; keep the suggestion on record
@@ -1356,7 +1595,6 @@ def triage_intake(c, payload, kind=None, supplied_by="merchant", source_system="
     return {"intake_id": iid, "status": "pending", "suggested_case": cid, "reason": reason}
 
 def intake_get(c, iid):
-    _ensure_intake(c)
     i = one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,))
     return {**i, "payload": jl(i["payload"])} if i else None
 
@@ -1367,14 +1605,16 @@ def open_case_summaries(c):
 
 def search_cases_by_key(c, key, value):
     """Which open cases already hold this key/value in their evidence?"""
-    if key not in ("order_id", "tracking", "txn_id"):
-        return {"error": "key must be order_id, tracking or txn_id"}
+    if key not in ("order_id", "tracking", "txn_id", "arn"):
+        return {"error": "key must be order_id, tracking, txn_id or arn"}
     if key == "txn_id":
         return [r["case_id"] for r in rows(c, "SELECT case_id FROM dispute_case WHERE disputed_txn_id=? AND status='active'", (value,))]
-    needle = "%" + jd({key: value})[1:-1] + "%"
+    if key == "arn":
+        return [r["case_id"] for r in rows(c, "SELECT case_id FROM dispute_case WHERE arn=? AND status='active'", (value,))]
     return [r["case_id"] for r in rows(c, """SELECT DISTINCT e.case_id FROM evidence_item e
                 JOIN dispute_case d ON d.case_id=e.case_id
-                WHERE e.status='active' AND d.status='active' AND e.payload LIKE ?""", (needle,))]
+                WHERE e.status='active' AND d.status='active' AND json_extract(e.payload,'$.%s')=?""" % key,
+                (value,))]
 
 def llm_attach_intake(c, iid, case_id, reason):
     """A0's LLM loop proposes an attach; the substrate re-verifies it. The item
@@ -1400,15 +1640,15 @@ def llm_queue_intake(c, iid, suggested_case, reason):
     return {"status": "pending", "suggested_case": suggested_case}
 
 def list_intake(c, pending_only=True):
-    _ensure_intake(c)
     q = "SELECT * FROM intake_item" + (" WHERE status='pending'" if pending_only else "") + " ORDER BY received_at"
     return [{**i, "payload": jl(i["payload"])} for i in rows(c, q)]
 
 def resolve_intake(c, iid, cid, user_key, reject=False):
-    _ensure_intake(c)
     user = USERS.get(user_key)
     if not user:
-        return {"error": "unknown user"}
+        return {"error": "unknown user", "code": 403}
+    if not can_work(user_key):
+        return {"error": "%s is a read-only role" % user["title"], "code": 403}
     item = one(c, "SELECT * FROM intake_item WHERE intake_id=?", (iid,))
     if not item or item["status"] != "pending":
         return {"error": "no pending intake item"}
@@ -1430,7 +1670,7 @@ def seed(c):
     log.info(jd({"event": "nba_model.trained", "train_accuracy": acc, "data": "synthetic"}))
     cid = "DSP-100205"
     open_case(c, cid, customer_id="CUST-100205", card_id="tok_9f2a6b_4321", txn="TXN-88231",
-              reason="13.1", amount=129.99, ccy="USD")
+              arn="74011226088231", reason="13.1", amount=129.99, ccy="USD")
     assemble_evidence(c, cid, "customer_statement", "user_input",
                       {"text": "I never received the item.", "card": "4111 1111 1111 1111"},
                       {"system": "dispute_portal", "authority": "first_party", "supplied_by": "customer", "confidence": 0.5},
@@ -1512,6 +1752,26 @@ def agent_reason(c, cid):
         log_audit(c, cid, "case-planner (llm)", "agent.rationale", msg.content[0].text[:400])
     except Exception as e:
         log.warning("llm off: %s", e)
+
+def report_summary(c):
+    """The numbers ops runs on: aging, outcomes and recovered value by reason,
+    SLA breaches on the register."""
+    dl = days_left_map(c)
+    aging, open_n = {"0-7": 0, "8-15": 0, "16-30": 0}, 0
+    for x in rows(c, "SELECT case_id FROM dispute_case WHERE status='active'"):
+        open_n += 1
+        d = dl.get(x["case_id"], 30)
+        aging["0-7" if d <= 7 else "8-15" if d <= 15 else "16-30"] += 1
+    by_reason = {}
+    for x in rows(c, "SELECT reason_code, liability_outcome, amount FROM dispute_case WHERE liability_outcome IS NOT NULL"):
+        r = by_reason.setdefault(x["reason_code"],
+                                 {"Cardholder favour": 0, "Merchant favour": 0, "No recovery": 0, "recovered_value": 0.0})
+        r[x["liability_outcome"]] += 1
+        if x["liability_outcome"] == "Cardholder favour":
+            r["recovered_value"] = round(r["recovered_value"] + (x["amount"] or 0), 2)
+    breaches = one(c, "SELECT COUNT(*) n FROM service_request WHERE status IN ('sent','chased') AND due_at < ?", (now(),))["n"]
+    return {"open_cases": open_n, "aging_by_days_left": aging,
+            "outcomes_by_reason": by_reason, "sla_breaches": breaches}
 
 # ---------------------------------------------------------------- view assembly (for API/UI)
 def case_view(c, cid):
