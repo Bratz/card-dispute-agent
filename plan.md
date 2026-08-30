@@ -350,6 +350,37 @@ Phase 1 = must land before any topology change or real deployment.
 - [ ] **S13. Worker fleet** for journeys + agent runs; audit archival; spend
   budgets and scheduled eval.py runs as drift monitoring.
 
+## Regulatory SLA & reporting gaps (domain Q&A, 2026-08-30)
+
+SLAs are fixed by the regulator and vary by country; today's clocks are
+hardcoded Reg E-flavour constants and nothing happens when they breach.
+
+- [ ] **R1. Per-jurisdiction SLA config** — `service.py` `deadline_tracking`
+  hardcodes +14d (provisional-credit decision) and +45d (investigation);
+  regulators differ (Reg E 10 business days / 45–90d; RBI limited-liability
+  shadow credit in 10 working days + TAT harmonisation; PSD2 D+1 refund).
+  Fix: move the clock set into `app_config` beside the reason rules, editable
+  in Administration (team lead, dual-control per S4); pick the set per
+  deployment, not per code change. Include business-day arithmetic — the
+  "+14 calendar ≈ 10 business days" shortcut is marked ponytail already.
+
+- [ ] **R2. Clock breaches have no consequence** — `deadline.status` is never
+  set to `met`/`missed`; a passed `response_sla` (provisional-credit decision
+  due) or `evidence_due` (investigation limit) changes nothing. Fix: a review
+  pass alongside `review_requests` that marks breached clocks `missed`, opens
+  an intervention for regulatory clocks (a missed Reg E clock is a compliance
+  event, not a backlog item), and records `met` with the date when the gating
+  event lands (PC decision = the liability decision or denial; investigation
+  end = case resolution). Show breach state on the Waiting-on panel.
+
+- [ ] **R3. Regulatory MIS pack** — regulators receive complaint volumes,
+  ageing, and TAT compliance; `/api/reports` has aging/outcomes/breaches but
+  no TAT view and no export. Fix: extend `report_summary` with per-clock
+  compliance (met/missed/pending counts, median days-to-decision, cases past
+  the investigation limit) and add `regulatory.csv` to the export endpoint —
+  the period pack an ops manager files, built from the audit trail that
+  already timestamps every event.
+
 ## Verify
 
 - `python smoke.py` after each fix; add one assert per behavioral fix
