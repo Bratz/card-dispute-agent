@@ -1973,7 +1973,9 @@ def agent_reason(c, cid):
               messages=[{"role": "user", "content":
                          "In two plain sentences for an analyst, say why this is the right next step. "
                          "Positions: %s. Proposed step: %s." % (pos, rec)}])
-        log_audit(c, cid, "case-planner (llm)", "agent.rationale", msg.content[0].text[:400])
+        text = "".join(b.text for b in msg.content if b.type == "text").strip()
+        if text:   # content[0] may be a thinking block on current models — filter, never index
+            log_audit(c, cid, "case-planner (llm)", "agent.rationale", text[:400])
     except Exception as e:
         log.warning("llm off: %s", e)
 
