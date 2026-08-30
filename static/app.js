@@ -327,6 +327,14 @@ function Cardholder({ tick, refresh }) {
   const [story, setStory] = useState("");
   const [draft, setDraft] = useState(null);
   const [manual, setManual] = useState(false);
+  const [chat, setChat] = useState([]);
+  const [q, setQ] = useState("");
+  const ask = async () => {
+    const question = q.trim(); if (!question) return;
+    setQ("");
+    const r = await jbody(`/api/cardholder/${cid}/chat`, { text: question });
+    setChat(cs => [...cs, { q: question, a: r.answer || r.error }]);
+  };
   useEffect(() => { jget("/api/cases").then(cs => { setCases(cs); setCid(x => x || (cs[0] && cs[0].case_id) || ""); }); }, [tick]);
   useEffect(() => { if (cid) jget(`/api/cardholder/${cid}`).then(setCv); }, [cid, tick]);
   const respond = async () => {
@@ -395,6 +403,18 @@ function Cardholder({ tick, refresh }) {
             placeholder="Type your reply…" value=${reply} onInput=${e => setReply(e.target.value)}></textarea>
           <button class="btn pri" style=${{ marginTop: "7px" }} disabled=${!reply.trim()} onClick=${respond}>Send reply</button></div>`
           : html`<div style=${{ marginTop: "10px", color: "var(--muted)", fontSize: "12.5px" }}>Nothing needed from you right now.</div>`}
+        <div style=${{ marginTop: "14px", borderTop: "1px solid var(--line-2)", paddingTop: "10px" }}>
+          <div style=${{ fontSize: "11px", textTransform: "uppercase", color: "var(--muted)", marginBottom: "6px" }}>Ask about your dispute</div>
+          ${chat.map((m, i) => html`<div key=${i} style=${{ marginBottom: "7px", fontSize: "12.5px" }}>
+            <div style=${{ fontWeight: "600" }}>You: ${m.q}</div>
+            <div class="chat-a" style=${{ color: "var(--muted)" }}>${m.a}</div></div>`)}
+          <div style=${{ display: "flex", gap: "8px" }}>
+            <input style=${{ flex: 1 }} placeholder="e.g. What is happening with my dispute?"
+              value=${q} onInput=${e => setQ(e.target.value)}
+              onKeyDown=${e => { if (e.key === "Enter") ask(); }}/>
+            <button class="btn" disabled=${!q.trim()} onClick=${ask}>Ask</button>
+          </div>
+        </div>
       </div>` : html`<span style=${{ color: "var(--muted)" }}>No case selected.</span>`}<//>
   </div>`;
 }

@@ -138,9 +138,16 @@ def main():
         expect_toast(page, "raised")
         ok("T9 cardholder raises a dispute through the channel form")
 
+        # T10 — the customer asks the status in their own words (deterministic floor)
+        page.wait_for_timeout(800)
+        page.get_by_placeholder("e.g. What is happening with my dispute?").fill("What is happening?")
+        page.get_by_role("button", name="Ask", exact=True).click()
+        expect(page.locator(".chat-a").first).to_contain_text("About your dispute")
+        ok("T10 status chat answers from the customer's own view")
+
         browser.close()
 
-    print("\nUI PASS — %d/9 scenarios" % len(results))
+    print("\nUI PASS — %d/10 scenarios" % len(results))
 
 
 if __name__ == "__main__":

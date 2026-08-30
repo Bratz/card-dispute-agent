@@ -1646,6 +1646,32 @@ def cardholder_view(c, cid):
                           for r in list_requests(c, cid)
                           if r["party_id"] == "cardholder" and r["status"] in ("sent", "chased")]}
 
+STAGE_WORDS = {"raised": "we have your dispute", "gathering": "we are gathering the facts",
+               "reconstructed": "we have pieced together what happened",
+               "interpreting": "we are weighing the evidence",
+               "awaiting_approval": "a specialist is reviewing the next step",
+               "actioned": "we have acted on it and are waiting for the card network's answer",
+               "resolved": "it is resolved"}
+
+def status_answer(v):
+    """Deterministic floor for the customer status chat: plain words, built from
+    the same minimised view the page shows. The model is optional; an answer
+    is not."""
+    parts = ["About your dispute over %s %s: %s." %
+             (v["amount"], v["currency"] or "", STAGE_WORDS.get(v["stage"], v["stage"]))]
+    if v["outcome"]:
+        parts.append("The outcome is recorded: %s." % v["outcome"])
+    elif v["open_asks"]:
+        a = v["open_asks"][0]
+        parts.append("We need something from you: %s. Please reply by %s." %
+                     (a["purpose"] or "a short reply", a["due"]))
+    else:
+        parts.append("Nothing is needed from you right now.")
+        if v["provisional_credit_by"]:
+            parts.append("Our decision on a temporary credit is due by %s." %
+                         v["provisional_credit_by"][:10])
+    return " ".join(parts)
+
 def raise_from_cardholder(c, f, statement_text=""):
     """The cardholder channel raises a dispute. Fixed schema only — the free
     text becomes the statement (redacted on intake), never instructions."""

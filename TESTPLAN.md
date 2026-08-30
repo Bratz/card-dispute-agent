@@ -163,6 +163,7 @@ stable — reference them in bug reports.
 | 12-2 | Channel raise + statement redacted | POST /api/cardholder/raise with PAN in story | case raised; statement masked; "Cardholder channel" audited | smoke, test_api |
 | 12-3 | Bad fields refused | missing field / unknown reason code | 400 | smoke |
 | 12-4 | Reply fulfils the open ask | approve+execute cardholder ask; reply via ingest | request flips `fulfilled` | verified in-browser (repeatable via test_api pattern) |
+| 12-5 | Status chat | customer asks in their own words (incl. an embedded instruction) | grounded plain-words answer from the minimised view; deterministic floor when the model is off; read-only — nothing acted | smoke, test_api, test_ui T10 |
 
 ## TS-13 Reporting & exports
 

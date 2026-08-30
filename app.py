@@ -225,6 +225,28 @@ def cardholder_case(cid: str):
         c.close()
 
 
+@app.post("/api/cardholder/{cid}/chat")
+def cardholder_chat(cid: str, payload: dict = Body(...)):
+    """The customer asks about their own dispute in their own words. Grounded
+    on the minimised view only; deterministic plain-English answer when the
+    model is off or fails. Read-only — the question can never act on the case."""
+    c = db()
+    try:
+        v = service.cardholder_view(c, cid)
+        if not v:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if os.environ.get("CARD_DISPUTE_LLM") == "1":
+            try:
+                import agent
+                return {"answer": agent.answer_status_question(v, payload.get("text") or ""),
+                        "engine": "llm"}
+            except Exception as e:
+                logging.getLogger("card_dispute").warning("status chat fell back: %s", e)
+        return {"answer": service.status_answer(v), "engine": "standard"}
+    finally:
+        c.close()
+
+
 @app.post("/api/cardholder/parse")
 def cardholder_parse(payload: dict = Body(...)):
     """Conversational intake: the agent structures the story; a person confirms."""
