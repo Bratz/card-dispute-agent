@@ -1672,6 +1672,33 @@ def status_answer(v):
                          v["provisional_credit_by"][:10])
     return " ".join(parts)
 
+_QUESTION_STARTS = ("what", "when", "where", "why", "how", "who", "is", "are",
+                    "do", "does", "did", "can", "could", "will", "have", "has")
+
+def _is_question(text):
+    t = (text or "").strip().lower()
+    return t.endswith("?") or (t.split(" ", 1)[0] if t else "") in _QUESTION_STARTS
+
+def cardholder_message(c, cid, text):
+    """Route one customer chat message. A question gets a status answer; a
+    statement, while an ask is open on their active case, IS their reply — it
+    goes through the normal intake door (redacted, matched by the transaction
+    id) and fulfils the open ask. A plain rule routes it, never the model:
+    whether text becomes evidence must be predictable."""
+    v = cardholder_view(c, cid)
+    if not v:
+        return None
+    text = (text or "").strip()
+    if v["status"] == "active" and v["open_asks"] and text and not _is_question(text):
+        triage_intake(c, {"txn_id": v["txn_id"], "text": text, "channel": "cardholder portal"},
+                      supplied_by="customer", source_system="cardholder_channel")
+        v2 = cardholder_view(c, cid)
+        tail = ("Nothing more is needed from you right now." if not v2["open_asks"] else
+                "We still need: %s (by %s)." % (v2["open_asks"][0]["purpose"] or "a short reply",
+                                                v2["open_asks"][0]["due"]))
+        return {"answer": "Thank you — your reply is on the case. " + tail, "filed": True}
+    return {"answer": status_answer(v), "filed": False}
+
 def raise_from_cardholder(c, f, statement_text=""):
     """The cardholder channel raises a dispute. Fixed schema only — the free
     text becomes the statement (redacted on intake), never instructions."""

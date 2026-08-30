@@ -334,6 +334,7 @@ function Cardholder({ tick, refresh }) {
     setQ("");
     const r = await jbody(`/api/cardholder/${cid}/chat`, { text: question });
     setChat(cs => [...cs, { q: question, a: r.answer || r.error }]);
+    if (r.filed) refresh();               // the reply landed on the case — asks update
   };
   useEffect(() => { jget("/api/cases").then(cs => { setCases(cs); setCid(x => x || (cs[0] && cs[0].case_id) || ""); }); }, [tick]);
   useEffect(() => { if (cid) jget(`/api/cardholder/${cid}`).then(setCv); }, [cid, tick]);

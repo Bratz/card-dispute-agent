@@ -232,17 +232,20 @@ def cardholder_chat(cid: str, payload: dict = Body(...)):
     model is off or fails. Read-only — the question can never act on the case."""
     c = db()
     try:
-        v = service.cardholder_view(c, cid)
-        if not v:
+        text = payload.get("text") or ""
+        r = service.cardholder_message(c, cid, text)
+        if r is None:
             return JSONResponse({"error": "not found"}, status_code=404)
+        if r["filed"]:                      # filing is rule-routed and always confirmed plainly
+            return {**r, "engine": "standard"}
         if os.environ.get("CARD_DISPUTE_LLM") == "1":
             try:
                 import agent
-                return {"answer": agent.answer_status_question(v, payload.get("text") or ""),
-                        "engine": "llm"}
+                return {"answer": agent.answer_status_question(service.cardholder_view(c, cid), text),
+                        "engine": "llm", "filed": False}
             except Exception as e:
                 logging.getLogger("card_dispute").warning("status chat fell back: %s", e)
-        return {"answer": service.status_answer(v), "engine": "standard"}
+        return {**r, "engine": "standard"}
     finally:
         c.close()
 

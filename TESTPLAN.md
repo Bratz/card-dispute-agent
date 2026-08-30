@@ -164,6 +164,7 @@ stable — reference them in bug reports.
 | 12-3 | Bad fields refused | missing field / unknown reason code | 400 | smoke |
 | 12-4 | Reply fulfils the open ask | approve+execute cardholder ask; reply via ingest | request flips `fulfilled` | verified in-browser (repeatable via test_api pattern) |
 | 12-5 | Status chat | customer asks in their own words (incl. an embedded instruction) | grounded plain-words answer from the minimised view; deterministic floor when the model is off; read-only — nothing acted | smoke, test_api, test_ui T10 |
+| 12-6 | Chat reply files as evidence | statement while an ask is open on an active case; a question; a statement on a closed case | statement goes through the intake door (redacted) and fulfils the ask; questions and closed cases never file — routing is a plain rule, never the model | smoke, test_api |
 
 ## TS-13 Reporting & exports
 
