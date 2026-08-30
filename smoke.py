@@ -558,6 +558,41 @@ def main():
     assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     assert s.case_lock(cid) is s.case_lock(cid)
 
+    # ---- R1: regulatory clocks are per-jurisdiction config, business-day aware ----
+    import datetime as _dt
+    assert s._add_business_days(_dt.date(2026, 1, 2), 1) == _dt.date(2026, 1, 5)   # Fri +1bd -> Mon
+    assert s.save_sla(c, {"provisional_credit_business_days": 5}, "user1").get("error")   # lead-only
+    assert s.save_sla(c, {"jurisdiction": "IN RBI (demo)", "provisional_credit_business_days": 5,
+                          "investigation_days": 30}, "lead")["status"] == "saved"
+    r = s.raise_dispute(c, {"customer_id": "CUST-SLA", "card_token": "tok_sla", "txn_id": "TXN-SLA",
+                            "amount": 90, "reason_code": "13.1"}, "user1")
+    cidsla = r["case_id"]
+    opened = _dt.date.fromisoformat(s.get_case(c, cidsla)["opened_at"][:10])
+    dlx = {d["kind"]: d for d in s.list_deadlines(c, cidsla)}
+    assert dlx["response_sla"]["due_at"] == s._add_business_days(opened, 5).isoformat(), dlx
+    assert dlx["evidence_due"]["due_at"] == (opened + _dt.timedelta(days=30)).isoformat()
+
+    # ---- R2: a passed regulatory clock is marked missed and escalates ONCE ----
+    c.execute("UPDATE deadline SET due_at='2020-01-01' WHERE case_id=? AND kind='response_sla'", (cidsla,))
+    s.review_clocks(c, cidsla)
+    assert {d["kind"]: d["status"] for d in s.list_deadlines(c, cidsla)}["response_sla"] == "missed"
+    n_breach = lambda: len([a for a in s.get_audit(c, cidsla) if (a["reason"] or "").startswith("clock-breach:")])
+    assert n_breach() == 1
+    s.review_clocks(c, cidsla)
+    assert n_breach() == 1                                    # once, not per sweep
+    # met lands with the gating event; a miss is never overwritten by met
+    s.review_interpretation(c, cidsla, "user1")
+    assert s.record_decision(c, cidsla, "No recovery", user_key="user2")["status"] == "recorded"
+    dlx = {d["kind"]: d["status"] for d in s.list_deadlines(c, cidsla)}
+    assert dlx == {"representment_window": "met", "response_sla": "missed", "evidence_due": "met"}, dlx
+
+    # ---- R3: the regulator pack numbers ----
+    rep = s.report_summary(c)
+    assert rep["tat"]["provisional_credit_decision"]["missed"] >= 1, rep["tat"]
+    assert rep["tat"]["investigation"]["met"] >= 1
+    assert rep["median_days_to_decision"] is not None
+    assert rep["jurisdiction"].startswith("IN RBI")           # the saved config drives the pack
+
     # ---- cardholder channel: minimised view, channel raise, statement redacted ----
     cvw = s.cardholder_view(c, cid)
     assert cvw and cvw["txn_id"] and "open_asks" in cvw, cvw

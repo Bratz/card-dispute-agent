@@ -101,9 +101,15 @@ def main():
     assert r.text.splitlines()[0] == "at,actor,event,reason,ref"
     assert t.get("/api/export/nope.csv").status_code == 404
 
-    # 15-12 reports, skills, agents, users (13-1)
+    # 15-12 reports, skills, agents, users (13-1) + regulatory surface (R1-R3)
     rep = t.get("/api/reports").json()
     assert sum(rep["aging_by_days_left"].values()) == rep["open_cases"], rep
+    assert "tat" in rep and "jurisdiction" in rep and "past_investigation_limit" in rep
+    r = t.get("/api/rules").json()
+    assert r["sla"]["provisional_credit_business_days"], r.get("sla")
+    assert t.put("/api/rules", json={"sla": {"investigation_days": 1}}, headers=H("user2")).status_code == 403
+    r = t.get("/api/export/regulatory.csv")
+    assert r.status_code == 200 and r.text.splitlines()[0].startswith("case_id,opened_at,reason_code"), r.text[:80]
     assert len(t.get("/api/skills").json()) == 10
     assert set(t.get("/api/agents").json()) == {"A0", "A1", "A2"}
     assert t.get("/api/users").json()["ops"]["role"] == "ops"

@@ -197,6 +197,12 @@ function Reports({ tick }) {
         <${Panel} pad=${false} title="Aging" x="open cases by days left on the window">
           <table><thead><tr><th>Days left</th><th class="num">Cases</th></tr></thead>
           <tbody>${Object.entries(rep.aging_by_days_left).map(([b, n]) => html`<tr key=${b}><td>${b}</td><td class="num">${n}</td></tr>`)}</tbody></table><//>
+        <${Panel} pad=${false} title="TAT compliance" x=${(rep.jurisdiction || "") + " · median " + (rep.median_days_to_decision ?? "—") + "d to decision · " + rep.past_investigation_limit + " past the investigation limit"}>
+          <table><thead><tr><th>Regulatory clock</th><th class="num">Met</th><th class="num">Missed</th><th class="num">Pending</th></tr></thead>
+          <tbody>${Object.entries(rep.tat || {}).map(([k, v]) => html`<tr key=${k}>
+            <td>${k.replace(/_/g, " ")}</td><td class="num">${v.met}</td>
+            <td class="num" style=${v.missed ? { color: "var(--alert)" } : {}}>${v.missed}</td>
+            <td class="num">${v.pending}</td></tr>`)}</tbody></table><//>
         <${Panel} pad=${false} title="Outcomes by reason code" x="decided cases · recovered value">
           <table><thead><tr><th>Reason</th><th class="num">Cardholder</th><th class="num">Merchant</th><th class="num">No recovery</th><th class="num">Recovered</th></tr></thead>
           <tbody>${Object.entries(rep.outcomes_by_reason).map(([rc, r]) => html`<tr key=${rc}>
@@ -207,6 +213,8 @@ function Reports({ tick }) {
       <thead><tr><th>Report</th><th>Contents</th><th></th></tr></thead><tbody>
       <tr><td>Dispute book</td><td style=${{ color: "var(--muted)" }}>Every case: amounts, reason codes, stages, owners, outcomes</td>
         <td><a class="btn sm" href="/api/export/cases.csv" download>Export CSV</a></td></tr>
+      <tr><td>Regulatory pack</td><td style=${{ color: "var(--muted)" }}>Per-case regulatory clocks and their compliance state — the period filing</td>
+        <td><a class="btn sm" href="/api/export/regulatory.csv" download>Export CSV</a></td></tr>
       <tr><td>Case audit trail</td><td style=${{ color: "var(--muted)" }}>
           The complete audit record for <input style=${{ width: "120px" }} value=${cid} onInput=${e => setCid(e.target.value)}/></td>
         <td><a class="btn sm" href=${"/api/export/audit.csv?case_id=" + encodeURIComponent(cid)} download>Export CSV</a></td></tr>
@@ -229,9 +237,10 @@ function Admin({ tick }) {
         required: Array.isArray(x.required) ? x.required : String(x.required).split(",").map(s => s.trim()).filter(Boolean),
         actions: Array.isArray(x.actions) ? x.actions : String(x.actions).split(",").map(s => s.trim()).filter(Boolean) };
     });
-    const r = await jbody("/api/rules", { reasons, policy: rules.policy }, "PUT");
+    const r = await jbody("/api/rules", { reasons, policy: rules.policy, sla: rules.sla }, "PUT");
     notify(r.error || "Rules saved.");
   };
+  const setSla = (k, v) => setRules({ ...rules, sla: { ...rules.sla, [k]: v } });
   return html`<div><h1>Administration</h1>
     <p class="sub">Only the Team Lead can save.</p>
     ${agents && html`<${Panel} pad=${false} title="Agents" x="mandate + skills">
@@ -260,6 +269,17 @@ function Admin({ tick }) {
         <td style=${{ fontSize: "11.5px", color: "var(--muted)" }}>
           <details><summary style=${{ cursor: "pointer" }}>${(x.hypotheses || []).length} hypotheses · ${x.contradiction ? "contradiction rule" : "no contradiction rule"}</summary>
             <div class="mono" style=${{ whiteSpace: "pre-wrap", fontSize: "10.5px" }}>${JSON.stringify({ hypotheses: x.hypotheses, links: x.links, contradiction: x.contradiction }, null, 1)}</div></details></td></tr>`)}</tbody></table><//>
+    ${rules.sla && html`<${Panel} pad=${false} title="Regulatory clocks" x="fixed by the regulator — varies by jurisdiction">
+      <table style=${{ maxWidth: "560px" }}><tbody>
+        <tr><td>Jurisdiction</td>
+          <td><input style=${{ width: "200px" }} value=${rules.sla.jurisdiction} onInput=${e => setSla("jurisdiction", e.target.value)}/></td></tr>
+        <tr><td>Provisional-credit decision (business days)</td>
+          <td><input style=${{ width: "56px" }} value=${rules.sla.provisional_credit_business_days}
+            onInput=${e => setSla("provisional_credit_business_days", parseInt(e.target.value) || 0)}/></td></tr>
+        <tr><td>Investigation limit (days)</td>
+          <td><input style=${{ width: "56px" }} value=${rules.sla.investigation_days}
+            onInput=${e => setSla("investigation_days", parseInt(e.target.value) || 0)}/></td></tr>
+      </tbody></table><//>`}
     <${Panel} pad=${false} title="Approval policy">
       <table style=${{ maxWidth: "460px" }}><thead><tr><th>Action</th><th>Needs sign-off from</th></tr></thead>
       <tbody>${Object.entries(rules.policy).map(([act, role]) => html`<tr key=${act}>
@@ -516,7 +536,8 @@ function CaseTab({ v, cid, reload, refresh }) {
             <td>${({ representment_window: "Scheme response window", response_sla: "Provisional credit decision",
                      evidence_due: "Investigation limit" })[d.kind] || d.kind}</td>
             <td class="mono">${(d.due_at || "").slice(0, 10)}</td>
-            <td><span class=${"badge" + (d.status === "pending" && (d.due_at || "") < new Date().toISOString() ? " hi" : "")}>${d.status}</span></td></tr>`)}</tbody></table>`}
+            <td><span class=${"badge" + (d.status === "missed" || (d.status === "pending" && (d.due_at || "") < new Date().toISOString()) ? " hi"
+              : d.status === "met" ? " okb" : "")}>${d.status}</span></td></tr>`)}</tbody></table>`}
         ${v.requests && v.requests.length > 0 && html`<table><thead><tr><th>Party</th><th>Asked for</th><th>Status</th><th>Due</th></tr></thead>
           <tbody>${v.requests.map(r => html`<tr key=${r.request_id}>
             <td>${r.party_name}</td><td>${r.kinds.join(", ").replace(/_/g, " ")}</td>

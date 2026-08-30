@@ -254,7 +254,7 @@ def cardholder_raise(payload: dict = Body(...)):
 def rules_get():
     c = db()
     try:
-        return {"reasons": service.get_rules(c), "policy": service.get_policy(c)}
+        return {"reasons": service.get_rules(c), "policy": service.get_policy(c), "sla": service.get_sla(c)}
     finally:
         c.close()
 
@@ -269,6 +269,10 @@ def rules_put(payload: dict = Body(...), x_user: str = Header(default="")):
                 return JSONResponse(r, status_code=403)
         if payload.get("policy") is not None:
             r = service.save_policy(c, payload["policy"], x_user)
+            if r.get("error"):
+                return JSONResponse(r, status_code=403)
+        if payload.get("sla") is not None:
+            r = service.save_sla(c, payload["sla"], x_user)
             if r.get("error"):
                 return JSONResponse(r, status_code=403)
         c.commit()
@@ -367,6 +371,20 @@ def export(what: str, case_id: str = None):
             w.writerow(["at", "actor", "event", "reason", "ref"])
             for a in service.get_audit(c, case_id):
                 w.writerow([a["at"], a["actor"], a["event"], a["reason"] or "", a["ref"] or ""])
+        elif what == "regulatory.csv":
+            # the period pack: per-case regulatory clocks and their compliance state
+            w.writerow(["case_id", "opened_at", "reason_code", "status", "liability_outcome",
+                        "pc_due", "pc_status", "investigation_due", "investigation_status", "decided_at"])
+            dls = {(d["case_id"], d["kind"]): d for d in service.rows(
+                c, "SELECT case_id, kind, due_at, status FROM deadline WHERE kind IN ('response_sla','evidence_due')")}
+            decided = {a["case_id"]: a["at"] for a in service.rows(
+                c, "SELECT case_id, at FROM audit_entry WHERE event='liability.recorded'")}
+            for x in service.list_cases(c):
+                pc = dls.get((x["case_id"], "response_sla"), {})
+                inv = dls.get((x["case_id"], "evidence_due"), {})
+                w.writerow([x["case_id"], x["opened_at"][:10], x["reason_code"], x["status"],
+                            x["liability_outcome"] or "", pc.get("due_at", ""), pc.get("status", ""),
+                            inv.get("due_at", ""), inv.get("status", ""), (decided.get(x["case_id"]) or "")[:10]])
         else:
             return JSONResponse({"error": "unknown export"}, status_code=404)
         return PlainTextResponse(buf.getvalue(), media_type="text/csv",

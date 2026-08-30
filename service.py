@@ -416,6 +416,30 @@ def save_policy(c, policy, user_key):
 def chargeback_rules(c, reason_code):
     return get_rules(c).get(reason_code, {"text": reason_code, "required": [], "window_days": 30, "actions": []})
 
+# Regulatory clocks are fixed by the regulator and vary by jurisdiction —
+# configuration, not code. Picked per deployment, edited in Administration.
+DEFAULT_SLA = {"jurisdiction": "US Reg E (demo)",
+               "provisional_credit_business_days": 10,
+               "investigation_days": 45}
+
+def get_sla(c):
+    return {**DEFAULT_SLA, **(_config_get(c, "sla_clocks", {}) or {})}
+
+def save_sla(c, sla, user_key):
+    u = USERS.get(user_key)
+    if not u or u["role"] != "team_lead":
+        return {"error": "only the Team Lead can change the regulatory clocks"}
+    _config_set(c, "sla_clocks", sla)
+    return {"status": "saved"}
+
+def _add_business_days(d, n):
+    # ponytail: weekends only; a holiday calendar when a jurisdiction needs one
+    while n > 0:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            n -= 1
+    return d
+
 # ---------------------------------------------------------------- action tools
 def propose_action(c, cid, atype, params, purpose):
     key = "%s:%s:%s" % (cid, atype, purpose)
@@ -630,6 +654,11 @@ def record_decision(c, cid, outcome, user_key="user1"):
     c.execute("UPDATE dispute_case SET liability_outcome=?, stage=?, status=?, updated_at=? WHERE case_id=?",
               (outcome, "resolved" if terminal else "actioned",
                "closed" if terminal else "active", now(), cid))
+    # the decision IS the provisional-credit determination; closure meets the rest.
+    # A clock already missed stays missed — met never overwrites a breach.
+    c.execute("UPDATE deadline SET status='met' WHERE case_id=? AND kind='response_sla' AND status='pending'", (cid,))
+    if terminal:
+        c.execute("UPDATE deadline SET status='met' WHERE case_id=? AND status='pending'", (cid,))
     # the basis of the determination, snapshotted for the examiner
     log_audit(c, cid, user["name"], "liability.recorded", outcome + " — case closed",
               ref={"timeline_version": timeline_version(c, cid),
@@ -667,6 +696,7 @@ def record_network_outcome(c, cid, result, user_key="lead"):
     if case["status"] == "closed":
         return {"note": "already closed"}
     c.execute("UPDATE dispute_case SET stage='resolved', status='closed', updated_at=? WHERE case_id=?", (now(), cid))
+    c.execute("UPDATE deadline SET status='met' WHERE case_id=? AND status='pending'", (cid,))
     log_audit(c, cid, user["name"], "network.outcome", "chargeback %s — case closed" % result)
     return {"status": "closed", "network_outcome": result}
 
@@ -874,19 +904,23 @@ def deadline_tracking(c, cid):
     except ValueError:
         due = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=rule["window_days"])).date().isoformat()
     set_deadline(c, cid, "representment_window", due)
-    # regulatory clocks (Reg E flavour), anchored on the case open date:
-    # ponytail: 10 business days ~ 14 calendar; a business-day calendar when it matters
+    # regulatory clocks from the per-jurisdiction config, anchored on case open
     try:
+        sla = get_sla(c)
         opened = datetime.date.fromisoformat(case["opened_at"][:10])
-        set_deadline(c, cid, "response_sla", (opened + datetime.timedelta(days=14)).isoformat())   # provisional-credit decision
-        set_deadline(c, cid, "evidence_due", (opened + datetime.timedelta(days=45)).isoformat())   # investigation limit
-    except ValueError:
+        set_deadline(c, cid, "response_sla",                                # provisional-credit decision
+                     _add_business_days(opened, int(sla["provisional_credit_business_days"])).isoformat())
+        set_deadline(c, cid, "evidence_due",                                # investigation limit
+                     (opened + datetime.timedelta(days=int(sla["investigation_days"]))).isoformat())
+    except (ValueError, TypeError):
         pass
 
 def _days_left(c, cid):
-    d = one(c, "SELECT due_at FROM deadline WHERE case_id=? AND kind='representment_window' AND status='pending'", (cid,))
+    d = one(c, "SELECT due_at, status FROM deadline WHERE case_id=? AND kind='representment_window' AND status IN ('pending','missed')", (cid,))
     if not d:
         return 30
+    if d["status"] == "missed":
+        return 0
     try:
         due = datetime.date.fromisoformat(d["due_at"][:10])
         return max(0, (due - datetime.datetime.now(datetime.timezone.utc).date()).days)
@@ -898,7 +932,10 @@ def days_left_map(c):
     and claim_next use this instead of per-case _days_left."""
     out = {}
     today = datetime.datetime.now(datetime.timezone.utc).date()
-    for d in rows(c, "SELECT case_id, due_at FROM deadline WHERE kind='representment_window' AND status='pending'"):
+    for d in rows(c, "SELECT case_id, due_at, status FROM deadline WHERE kind='representment_window' AND status IN ('pending','missed')"):
+        if d["status"] == "missed":
+            out[d["case_id"]] = 0
+            continue
         try:
             out[d["case_id"]] = max(0, (datetime.date.fromisoformat(d["due_at"][:10]) - today).days)
         except ValueError:
@@ -1124,6 +1161,23 @@ def apply_chase(c, cid, request_id):
     log_audit(c, cid, "request-register", "request.chased",
               "reminder %d sent; new due date set" % (r["chase_count"] + 1))
 
+REG_CLOCKS = {"response_sla": "provisional-credit decision",
+              "evidence_due": "investigation limit"}
+
+def review_clocks(c, cid):
+    """Policy pass: a passed clock is marked missed; a missed REGULATORY clock
+    is a compliance event — it opens an intervention, once."""
+    today = now()[:10]
+    for d in list_deadlines(c, cid):
+        if d["status"] != "pending" or (d["due_at"] or "")[:10] >= today:
+            continue
+        c.execute("UPDATE deadline SET status='missed' WHERE deadline_id=?", (d["deadline_id"],))
+        if d["kind"] in REG_CLOCKS:
+            marker = "clock-breach:" + d["deadline_id"]
+            if not any((a["reason"] or "").startswith(marker) for a in get_audit(c, cid)):
+                log_audit(c, cid, "system", "intervention.requested",
+                          marker + " — the %s clock (due %s) was missed" % (REG_CLOCKS[d["kind"]], d["due_at"][:10]))
+
 def review_requests(c, cid):
     """Policy pass: an expired cardholder ask means the case proceeds on the
     record; a merchant ask chased twice without answer escalates to a person."""
@@ -1205,6 +1259,7 @@ def run_journey(c, cid):
     hypothesis_management(c, cid)
     deadline_tracking(c, cid)
     review_requests(c, cid)         # expire cardholder asks; escalate exhausted chases
+    review_clocks(c, cid)           # mark breached clocks; escalate regulatory misses
     next_best_action(c, cid)        # applies chargeback-rules
     agent_reason(c, cid)            # optional LLM narrative (off by default)
 
@@ -1770,8 +1825,25 @@ def report_summary(c):
         if x["liability_outcome"] == "Cardholder favour":
             r["recovered_value"] = round(r["recovered_value"] + (x["amount"] or 0), 2)
     breaches = one(c, "SELECT COUNT(*) n FROM service_request WHERE status IN ('sent','chased') AND due_at < ?", (now(),))["n"]
+    # TAT compliance per regulatory clock — the numbers the regulator pack files
+    tat = {}
+    for kind, label in (("response_sla", "provisional_credit_decision"), ("evidence_due", "investigation")):
+        r = one(c, "SELECT SUM(status='met') m, SUM(status='missed') x, SUM(status='pending') p FROM deadline WHERE kind=?", (kind,))
+        tat[label] = {"met": r["m"] or 0, "missed": r["x"] or 0, "pending": r["p"] or 0}
+    diffs = []
+    for r2 in rows(c, """SELECT d.opened_at o, a.at t FROM audit_entry a
+                         JOIN dispute_case d ON d.case_id=a.case_id WHERE a.event='liability.recorded'"""):
+        try:
+            diffs.append((datetime.date.fromisoformat(r2["t"][:10]) - datetime.date.fromisoformat(r2["o"][:10])).days)
+        except ValueError:
+            pass
+    diffs.sort()
+    past = one(c, """SELECT COUNT(*) n FROM deadline dl JOIN dispute_case d ON d.case_id=dl.case_id
+                     WHERE dl.kind='evidence_due' AND dl.status='missed' AND d.status='active'""")["n"]
     return {"open_cases": open_n, "aging_by_days_left": aging,
-            "outcomes_by_reason": by_reason, "sla_breaches": breaches}
+            "outcomes_by_reason": by_reason, "sla_breaches": breaches,
+            "tat": tat, "median_days_to_decision": diffs[len(diffs) // 2] if diffs else None,
+            "past_investigation_limit": past, "jurisdiction": get_sla(c)["jurisdiction"]}
 
 # ---------------------------------------------------------------- view assembly (for API/UI)
 def case_view(c, cid):
