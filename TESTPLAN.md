@@ -6,6 +6,7 @@ Three automation layers plus manual UI walkthroughs:
 | Layer | Runner | What it proves | Needs |
 |---|---|---|---|
 | Service | `python smoke.py` | domain logic, versioning, gates, LLM loop machinery (fake model) | nothing |
+| Journey | `python test_journey.py` | the challenge spec verbatim: nine journey steps (J1–J9) + the National Finale Inject (FI1–FI4) + the no-code engine (JL1), with fixtures and stubs documented in the file; own database | nothing |
 | API | `python test_api.py` | HTTP contract, status codes, role gates over the wire | nothing |
 | Live LLM | `python eval.py [N]` | real-model completion and guardrail rates | `ANTHROPIC_API_KEY`, `CARD_DISPUTE_LLM=1` |
 | UI | `python test_ui.py` (Playwright, system Chrome) | TS-16 walkthroughs 1–6 + 9 automated; LLM-on beats stay manual | `python app.py` running |

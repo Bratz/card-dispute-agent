@@ -18,3 +18,5 @@ jobs:
         run: python smoke.py
       - name: Run the API contract tests
         run: python test_api.py
+      - name: Run the journey and finale-inject suite
+        run: python test_journey.py
