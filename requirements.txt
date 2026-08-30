@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+httpx           # fastapi TestClient (test_api.py)
 # pydantic is pulled in by fastapi.
 # Optional — only for the no-code LLM runtime (CARD_DISPUTE_LLM=1 + ANTHROPIC_API_KEY):
 # anthropic

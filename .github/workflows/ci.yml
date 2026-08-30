@@ -16,3 +16,5 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run the end-to-end smoke test
         run: python smoke.py
+      - name: Run the API contract tests
+        run: python test_api.py
