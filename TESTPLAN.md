@@ -113,6 +113,7 @@ stable — reference them in bug reports.
 | 08-7 | Score breakdown on the record | read `action.scored` ref | p_success/score/urgency/authority/blocked | smoke |
 | 08-8 | Chase candidates & escalation | overdue merchant ask, 2 chases | chase proposed; escalation once, never twice | smoke |
 | 08-9 | Cardholder non-response expires | overdue cardholder ask | `expired`, "proceeding on the record" | smoke |
+| 08-10 | Next Best Evidence ranking | two missing kinds, one linked to a position | linked kind ranks first and is proposed; ranking (impact/supply/fit) in the `action.scored` ref; fulfilment rate from register history | smoke |
 
 ## TS-09 Deadlines & register
 

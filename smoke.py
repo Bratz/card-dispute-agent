@@ -610,6 +610,32 @@ def main():
     assert rep["median_days_to_decision"] is not None
     assert rep["jurisdiction"].startswith("IN RBI")           # the saved config drives the pack
 
+    # ---- E1: Next Best Evidence — ranked by impact x supply x clock fit ----
+    assert abs(s._fulfilment_rate(c, "carrier") - 0.6) < 1e-9        # <3 rows: no meaningful history
+    for i in range(4):
+        c.execute("INSERT INTO service_request(request_id,case_id,party_id,kinds,status,sent_at,due_at) "
+                  "VALUES(?,?,?,?,?,?,?)",
+                  (s.uid(), cidsla, "carrier", s.jd(["delivery_record"]),
+                   "fulfilled" if i == 0 else "expired", s.now(), s.now()))
+    assert abs(s._fulfilment_rate(c, "carrier") - 0.25) < 1e-9       # the register's history speaks
+    # two missing kinds: the one that also moves the assessment ranks first
+    rules_e = s.get_rules(c)
+    rules_e["13.3"]["required"] = ["correspondence", "delivery_record"]
+    rules_e["13.3"]["links"]["delivery_record"] = [["merchant_favour", "supports", 1.0]]
+    s._config_set(c, "reason_rules", rules_e)     # test shortcut past maker-checker
+    c.commit()
+    r = s.raise_dispute(c, {"customer_id": "CUST-EV", "card_token": "tok_ev", "txn_id": "TXN-EV",
+                            "amount": 120, "reason_code": "13.3"}, "user1")
+    cide = r["case_id"]
+    cands_e, _, meta_e = s.score_candidates(c, cide)
+    rkg = meta_e["evidence_ranking"]
+    assert len(rkg) == 2 and rkg[0]["kind"] == "delivery_record", rkg   # linked evidence outranks
+    assert rkg[0]["value"] >= rkg[1]["value"]
+    assert all({"kind", "party", "impact", "supply", "fit", "value"} <= set(x) for x in rkg)
+    assert any(x["purpose"] == "merchant-delivery_record" for x in cands_e)   # the winner is proposed
+    sc_e = [a for a in s.get_audit(c, cide) if a["event"] == "action.scored"]
+    assert "evidence_ranking" in s.jl(sc_e[-1]["ref"]), sc_e[-1]      # "why this evidence" on the record
+
     # ---- cardholder channel: minimised view, channel raise, statement redacted ----
     cvw = s.cardholder_view(c, cid)
     assert cvw and cvw["txn_id"] and "open_asks" in cvw, cvw

@@ -1020,6 +1020,46 @@ def _position_conf(c, cid):
             cc = (h["confidence"] or 0) / 100.0
     return mc, cc
 
+def _party_for_kind(c, kind, prefer=None):
+    """Which external (request-channel) party serves this evidence kind."""
+    ps = [p for p in list_parties(c) if kind in p["serves_kinds"] and p["channel"] == "request"]
+    if prefer:
+        for p in ps:
+            if p["party_id"] == prefer:
+                return p
+    return ps[0] if ps else None
+
+def _fulfilment_rate(c, party_id):
+    """How often this party actually answers, from the register's own history."""
+    r = one(c, "SELECT SUM(status IN ('fulfilled','partially_fulfilled')) f, COUNT(*) n "
+               "FROM service_request WHERE party_id=?", (party_id,))
+    if not r or not r["n"] or r["n"] < 3:
+        return 0.6                          # no meaningful history yet
+    return max(0.1, (r["f"] or 0) / r["n"])
+
+def rank_evidence(c, cid, rule, gaps, days):
+    """Next Best Evidence: rank candidate items by what each would change.
+    value = impact (moves the assessment via the links; unblocks the gate)
+          x supply (that party's answer rate) x fit (SLA lands inside the clock)."""
+    links = rule.get("links") or {}
+    cands = [(jl(g["about"]).get("required"), False) for g in gaps
+             if g["kind"] == "missing" and jl(g["about"]).get("required")]
+    if any(g["kind"] == "contradiction" for g in gaps):
+        cands.append(("correspondence", True))     # the cardholder's answer settles the conflict
+    out = []
+    for kind, settles in cands:
+        impact = 1.2 if settles else (
+            (1.0 if kind in (rule.get("required") or []) else 0.0)
+            + 0.5 * sum(l[2] for l in links.get(kind, [])))
+        party = _party_for_kind(c, kind, prefer="cardholder" if settles else None)
+        supply = _fulfilment_rate(c, party["party_id"]) if party else 0.6
+        fit = 1.0 if party and party["sla_days"] <= max(days, 1) else 0.3
+        out.append({"kind": kind, "party": party["party_id"] if party else None,
+                    "impact": round(impact, 2), "supply": round(supply, 2), "fit": fit,
+                    "value": round(impact * supply * fit, 3), "settles_contradiction": settles})
+    out.sort(key=lambda x: (-x["value"], x["kind"]))
+    return out
+
 def score_candidates(c, cid):
     """Pure scoring pass: rank the permitted candidates, name the blocked ones.
     score = P(success) x amount factor x urgency x authority. Used by the
@@ -1029,7 +1069,6 @@ def score_candidates(c, cid):
     rule = chargeback_rules(c, case["reason_code"])
     gaps = list_gaps(c, cid, open_only=True)
     contradiction = next((g for g in gaps if g["kind"] == "contradiction"), None)
-    missing = next((g for g in gaps if g["kind"] == "missing"), None)
     evs = list_evidence(c, cid)
     has_required = all(_kind_satisfied(evs, k, case["reason_code"]) for k in rule["required"])
     mc, cc = _position_conf(c, cid)
@@ -1050,14 +1089,14 @@ def score_candidates(c, cid):
             "amount_norm": amount_factor, "days_left_norm": min(days / 30.0, 1.0)}
 
     candidates, blocked = [], []
-    def consider(atype, summary, purpose, p=None):
+    def consider(atype, summary, purpose, p=None, weight=1.0):
         f = dict(base)
         for a in ("request_evidence", "raise_chargeback", "submit_representment", "send_correspondence"):
             f["b_" + a] = 1.0 if a == atype else 0.0
         if p is None:                     # actions outside the model's menu pass p in
             p = ml.predict(c, f)
         authority = 0.9 if policy.get(atype, "team_lead") == "team_lead" else 1.0
-        score = p * max(amount_factor, 0.05) * urgency * authority
+        score = p * max(amount_factor, 0.05) * urgency * authority * weight
         candidates.append({"atype": atype, "summary": summary, "purpose": purpose,
                            "p_success": round(p, 3), "score": round(score, 4),
                            "urgency": urgency, "authority": authority, "features": f})
@@ -1072,12 +1111,18 @@ def score_candidates(c, cid):
     if meta_b and meta_b["stale"]:
         consider("rerun_advocates", "Hear both sides again — the record changed since the briefs were written",
                  "advocates-rerun-v%d" % timeline_version(c, cid))
-    if contradiction:
-        consider("request_evidence", "Ask the cardholder to confirm the delivery address and who signed",
-                 "cardholder-address")
-    if missing:
-        req = jl(missing["about"]).get("required", "evidence")
-        consider("request_evidence", "Request %s from the merchant" % req.replace("_", " "), "merchant-" + req)
+    # Next Best Evidence: every candidate item ranked by what it would change,
+    # not just the first missing one. The best two compete in the action score.
+    ranking = rank_evidence(c, cid, rule, gaps, days)
+    top_value = ranking[0]["value"] if ranking and ranking[0]["value"] > 0 else 1.0
+    for ev_c in ranking[:2]:
+        w = ev_c["value"] / top_value
+        if ev_c["settles_contradiction"]:
+            consider("request_evidence", "Ask the cardholder to confirm the delivery address and who signed",
+                     "cardholder-address", weight=w)
+        else:
+            consider("request_evidence", "Request %s from the merchant" % ev_c["kind"].replace("_", " "),
+                     "merchant-" + ev_c["kind"], weight=w)
     # below cost-to-work: closing the case IS the economically correct step
     if 0 < (case["amount"] or 0) <= WRITE_OFF_LIMIT:
         consider("write_off", "Write off — %.2f %s is below cost to work" % (case["amount"], case["currency"] or ""),
@@ -1109,7 +1154,8 @@ def score_candidates(c, cid):
                    "a merchant position below 70%")
             blocked.append({"atype": "submit_representment", "why": "blocked by " + why})
 
-    return candidates, blocked, {"days_left": days, "urgency": urgency, "amount_factor": amount_factor}
+    return candidates, blocked, {"days_left": days, "urgency": urgency, "amount_factor": amount_factor,
+                                 "evidence_ranking": ranking}
 
 def next_best_action(c, cid):
     """Deterministic planner: score, then propose the winner with its breakdown."""
@@ -1129,6 +1175,8 @@ def next_best_action(c, cid):
     breakdown["amount_factor"] = round(amount_factor, 3)
     breakdown["blocked"] = blocked
     breakdown["model"] = "demo-1 (synthetic training data)"
+    if meta.get("evidence_ranking"):    # why this evidence, not that one
+        breakdown["evidence_ranking"] = meta["evidence_ranking"][:3]
     aid = propose_action(c, cid, best["atype"],
                          {"summary": best["summary"], "p_success": best["p_success"],
                           "score": best["score"], "needs": policy.get(best["atype"], "team_lead")},

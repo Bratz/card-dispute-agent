@@ -381,6 +381,21 @@ hardcoded Reg E-flavour constants and nothing happens when they breach.
   the period pack an ops manager files, built from the audit trail that
   already timestamps every event.
 
+## Next Best Evidence (2026-08-30)
+
+- [x] **E1. Evidence is chosen by rule, not by value** — `service.py`
+  `score_candidates` takes the FIRST missing gap (`next(g for g in gaps ...)`)
+  and never ranks between missing items; "next best evidence" is really "next
+  missing evidence". Fix: rank every candidate item (missing required kinds +
+  the contradiction-settling ask) by
+  **impact** (moves the assessment via the reason-code `links`; unblocks the
+  gated action) × **supply** (that party's actual fulfilment rate from the
+  register history) × **fit** (the party's SLA lands inside the scheme clock).
+  Propose the top-ranked ask; put the full ranking in the `action.scored`
+  audit ref so "why this evidence, not that one" is always answerable.
+  Existing purposes (`merchant-<kind>`, `cardholder-address`) keep their exact
+  form — the register wiring and idempotency keys depend on them.
+
 ## Verify
 
 - `python smoke.py` after each fix; add one assert per behavioral fix
