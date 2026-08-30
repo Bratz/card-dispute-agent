@@ -222,12 +222,15 @@ function Reports({ tick }) {
   </div>`;
 }
 
-function Admin({ tick }) {
+function Admin({ tick, refresh }) {
   const [rules, setRules] = useState(null);
   const [agents, setAgents] = useState(null);
   const [skills, setSkills] = useState(null);
+  const [cfgAudit, setCfgAudit] = useState([]);
   useEffect(() => { jget("/api/rules").then(setRules); jget("/api/agents").then(setAgents);
-    jget("/api/skills").then(setSkills); }, [tick]);
+    jget("/api/skills").then(setSkills); jget("/api/config-audit").then(setCfgAudit); }, [tick]);
+  const confirmCfg = async () => { const r = await jpost("/api/rules/confirm"); notify(r.error || ("Applied by " + r.by + ".")); refresh(); };
+  const discardCfg = async () => { const r = await jpost("/api/rules/discard"); notify(r.error || "Change discarded."); refresh(); };
   if (!rules) return html`<div><h1>Administration</h1></div>`;
   const setReason = (code, f, v) => setRules({ ...rules, reasons: { ...rules.reasons, [code]: { ...rules.reasons[code], [f]: v } } });
   const save = async () => {
@@ -238,11 +241,16 @@ function Admin({ tick }) {
         actions: Array.isArray(x.actions) ? x.actions : String(x.actions).split(",").map(s => s.trim()).filter(Boolean) };
     });
     const r = await jbody("/api/rules", { reasons, policy: rules.policy, sla: rules.sla }, "PUT");
-    notify(r.error || "Rules saved.");
+    notify(r.error || "Change proposed — a second person (team lead) confirms it.");
+    refresh();
   };
   const setSla = (k, v) => setRules({ ...rules, sla: { ...rules.sla, [k]: v } });
   return html`<div><h1>Administration</h1>
-    <p class="sub">Only the Team Lead can save.</p>
+    <p class="sub">Changes are maker-checker: one person proposes, a different team lead confirms.</p>
+    ${rules.pending && html`<div class="banner"><b>Awaiting confirmation.</b>
+      ${" " + rules.pending.proposed_by + " proposed a change to " + Object.keys(rules.pending.change).join(", ").replace(/_/g, " ") + ". "}
+      ${isLead() && html`<button class="btn sm pri" onClick=${confirmCfg}>Confirm & apply</button>`}
+      ${" "}<button class="btn sm" onClick=${discardCfg}>Discard</button></div>`}
     ${agents && html`<${Panel} pad=${false} title="Agents" x="mandate + skills">
       <table><thead><tr><th>Agent</th><th>Mandate</th><th>Skills</th></tr></thead>
       <tbody>${Object.entries(agents).map(([k, a]) => html`<tr key=${k}>
@@ -284,9 +292,15 @@ function Admin({ tick }) {
       <table style=${{ maxWidth: "460px" }}><thead><tr><th>Action</th><th>Needs sign-off from</th></tr></thead>
       <tbody>${Object.entries(rules.policy).map(([act, role]) => html`<tr key=${act}>
         <td>${act.replace(/_/g, " ")}</td>
-        <td><select value=${role} onChange=${e => setRules({ ...rules, policy: { ...rules.policy, [act]: e.target.value } })}>
-          <option value="analyst">Analyst</option><option value="team_lead">Team Lead</option></select></td></tr>`)}</tbody></table><//>
-    <button class="btn pri" onClick=${save}>Save rules</button>
+        <td>${act === "decision_lead_limit"
+          ? html`<input style=${{ width: "80px" }} value=${role}
+              onInput=${e => setRules({ ...rules, policy: { ...rules.policy, [act]: parseFloat(e.target.value) || 0 } })}/>`
+          : html`<select value=${role} onChange=${e => setRules({ ...rules, policy: { ...rules.policy, [act]: e.target.value } })}>
+              <option value="analyst">Analyst</option><option value="team_lead">Team Lead</option></select>`}</td></tr>`)}</tbody></table><//>
+    <button class="btn pri" onClick=${save}>Propose change</button>
+    ${cfgAudit.length > 0 && html`<div style=${{ height: "12px" }}></div>
+      <${Panel} title="Change log" x="the control plane's own trail — caseless audit">
+        <${AuditList} items=${cfgAudit} maxHeight="220px"/><//>`}
     <div style=${{ height: "12px" }}></div>
     <${Panel} pad=${false} title="Data handling">
       <table><thead><tr><th>Data</th><th>How it is handled</th></tr></thead><tbody>
@@ -785,7 +799,7 @@ function App() {
           : screen === "dashboard" ? html`<${Dashboard} tick=${tick}/>`
           : screen === "reports" ? html`<${Reports} tick=${tick}/>`
           : screen === "cardholder" ? html`<${Cardholder} tick=${tick} refresh=${refresh}/>`
-          : screen === "admin" ? html`<${Admin} tick=${tick}/>`
+          : screen === "admin" ? html`<${Admin} tick=${tick} refresh=${refresh}/>`
           : html`<${CaseView} cid=${caseId} tick=${tick} refresh=${refresh}/>`}
       </main>
     </div>

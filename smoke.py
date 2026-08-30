@@ -236,13 +236,25 @@ def main():
     aid_ro = s.propose_action(c, cid, "request_evidence", {"summary": "ro test"}, "test-ro")
     assert s.approve_action(c, aid_ro, "ops").get("error")
 
-    # ---- reason-code rules are configurable (Team Lead only) ----
+    # ---- S4: config changes are maker-checker, on the caseless audit ----
     rules = s.get_rules(c)
     rules["13.1"]["window_days"] = 10
-    assert s.save_rules(c, rules, "user1").get("error")            # analyst refused
-    assert s.save_rules(c, rules, "lead").get("status") == "saved" # lead allowed
+    assert s.propose_config(c, {"reason_rules": rules}, "ops").get("error")       # read-only refused
+    assert s.propose_config(c, {"bogus_key": {}}, "user1").get("error")           # section whitelist
+    assert s.propose_config(c, {"reason_rules": rules}, "user1")["status"] == "proposed"
+    assert s.propose_config(c, {"reason_rules": rules}, "user2").get("error")     # one at a time
+    assert s.confirm_config(c, "user2").get("error")                              # checker must be a lead
+    assert s.chargeback_rules(c, "13.1")["window_days"] == 30                     # nothing applied yet
+    assert s.confirm_config(c, "lead")["status"] == "applied"
     assert s.chargeback_rules(c, "13.1")["window_days"] == 10
-    assert s.save_policy(c, s.get_policy(c), "user2").get("error")
+    cfa = s.get_config_audit(c)
+    assert any(a["event"] == "config.applied" and a["case_id"] is None for a in cfa)
+    assert any(a["event"] == "config.proposed" for a in cfa)
+    # the proposer can never confirm their own change; discard needs proposer or lead
+    assert s.propose_config(c, {"approval_policy": s.get_policy(c)}, "lead")["status"] == "proposed"
+    assert "four-eyes" in s.confirm_config(c, "lead").get("error", "")
+    assert s.discard_config(c, "user1").get("error")                              # not proposer, not... analyst refused
+    assert s.discard_config(c, "lead")["status"] == "discarded"
 
     # ---- evidence intake: a charge-slip photo + redaction on typed text ----
     r = s.add_evidence(c, cid, "receipt",
@@ -489,6 +501,9 @@ def main():
     assert s.pending_action(c, cidf), "postcondition should now hold"
     runs = s.list_agent_runs(c, cidf)
     assert runs and runs[0]["outcome"] == "complete" and runs[0]["tokens_out"] > 0
+    # S5: the run records WHICH instructions it followed (mandate + skill hashes)
+    ins = runs[0]["transcript"][0].get("instructions")
+    assert ins and len(ins["mandate"]) == 12 and ins["skills"], ins
     # the disallowed rebuild_timeline call was refused: the version did not move
     assert s.timeline_version(c, cidf) == tlv_before
 
@@ -561,9 +576,11 @@ def main():
     # ---- R1: regulatory clocks are per-jurisdiction config, business-day aware ----
     import datetime as _dt
     assert s._add_business_days(_dt.date(2026, 1, 2), 1) == _dt.date(2026, 1, 5)   # Fri +1bd -> Mon
-    assert s.save_sla(c, {"provisional_credit_business_days": 5}, "user1").get("error")   # lead-only
-    assert s.save_sla(c, {"jurisdiction": "IN RBI (demo)", "provisional_credit_business_days": 5,
-                          "investigation_days": 30}, "lead")["status"] == "saved"
+    assert s.propose_config(c, {"sla_clocks": {}}, "auditor").get("error")        # read-only refused
+    assert s.propose_config(c, {"sla_clocks": {"jurisdiction": "IN RBI (demo)",
+                                               "provisional_credit_business_days": 5,
+                                               "investigation_days": 30}}, "user1")["status"] == "proposed"
+    assert s.confirm_config(c, "lead")["status"] == "applied"
     r = s.raise_dispute(c, {"customer_id": "CUST-SLA", "card_token": "tok_sla", "txn_id": "TXN-SLA",
                             "amount": 90, "reason_code": "13.1"}, "user1")
     cidsla = r["case_id"]
@@ -608,13 +625,24 @@ def main():
     assert s.raise_from_cardholder(c, {"customer_id": "x", "card_token": "t", "txn_id": "T",
                                        "amount": 5, "reason_code": "99.9"}).get("error")
 
+    # ---- S9: the outbox mirrors the state changes, cursor-pollable ----
+    topics = {o["topic"] for o in s.rows(c, "SELECT topic FROM outbox")}
+    assert {"case.raised", "case.decided", "network.outcome", "action.executed"} <= topics, topics
+    last = s.one(c, "SELECT MAX(event_id) m FROM outbox")["m"]
+    assert s.rows(c, "SELECT * FROM outbox WHERE event_id > ?", (last,)) == []    # cursor semantics
+    dec = next(o for o in s.rows(c, "SELECT * FROM outbox WHERE topic='case.decided'"))
+    assert s.jl(dec["payload"])["case_id"].startswith("DSP-")
+
     # ---- the case_action CHECK migration: old DB -> new types, FKs intact ----
     import os, sqlite3
     oldp = os.path.join(s.HERE, "test_migration.db")
     if os.path.exists(oldp):
         os.remove(oldp)
     with open(s.SCHEMA, encoding="utf-8") as f:
-        old_ddl = f.read().replace(",'deny_dispute','write_off'", "")     # the pre-F3 CHECK
+        old_ddl = (f.read()
+                   .replace(",'deny_dispute','write_off'", "")            # the pre-F3 CHECK
+                   .replace("case_id TEXT REFERENCES dispute_case(case_id),   -- NULL = configuration/system event",
+                            "case_id TEXT NOT NULL REFERENCES dispute_case(case_id),"))   # pre-S4 audit
     oc = sqlite3.connect(oldp)
     oc.executescript(old_ddl)
     oc.execute("INSERT INTO dispute_case(case_id,customer_id,card_id,disputed_txn_id,reason_code,stage,status,opened_at,updated_at) "
@@ -623,12 +651,15 @@ def main():
                "VALUES('a1','DSP-1','request_evidence','k1','proposed','2026-01-01')")
     oc.execute("INSERT INTO approval(approval_id,case_id,action_id,decision,approver_role,approver_id,decided_at) "
                "VALUES('ap1','DSP-1','a1','approve','analyst','User 1','2026-01-01')")
+    oc.execute("INSERT INTO audit_entry(case_id,at,actor,event) VALUES('DSP-1','2026-01-01','x','case.raised')")
     oc.commit(); oc.close()
     mc2 = s.init_db(path=oldp)
     mc2.execute("INSERT INTO case_action(action_id,case_id,type,idempotency_key,status,created_at) "
                 "VALUES('a2','DSP-1','write_off','k2','proposed','2026-01-01')")   # new type accepted
     assert count(mc2, "SELECT COUNT(*) FROM case_action") == 2                     # old row survived
     assert count(mc2, "SELECT COUNT(*) FROM approval WHERE action_id='a1'") == 1   # FK intact
+    mc2.execute("INSERT INTO audit_entry(case_id,at,actor,event) VALUES(NULL,'2026-01-02','x','config.applied')")
+    assert count(mc2, "SELECT COUNT(*) FROM audit_entry") == 2                     # caseless now accepted, old row kept
     assert mc2.execute("PRAGMA foreign_key_check").fetchall() == []                # no dangling references
     mc2.close()
     os.remove(oldp)

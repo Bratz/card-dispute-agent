@@ -39,7 +39,7 @@ def main():
     assert t.post("/api/actions/x/execute").status_code == 403                  # no profile
     assert t.post(f"/api/cases/{CID}/evidence", json={"kind": "receipt", "fields": {}},
                   headers=H("auditor")).status_code == 403                      # read-only role
-    assert t.put("/api/rules", json={"policy": {}}, headers=H("user2")).status_code == 403
+    assert t.put("/api/rules", json={"policy": {}}, headers=H("auditor")).status_code == 403  # read-only can't propose
     assert t.post(f"/api/cases/{CID}/claim", headers=H("ops")).status_code == 409  # read-only claim refused
     assert t.post("/api/cases", json={}, headers=H("nobody")).status_code == 403
 
@@ -107,7 +107,19 @@ def main():
     assert "tat" in rep and "jurisdiction" in rep and "past_investigation_limit" in rep
     r = t.get("/api/rules").json()
     assert r["sla"]["provisional_credit_business_days"], r.get("sla")
-    assert t.put("/api/rules", json={"sla": {"investigation_days": 1}}, headers=H("user2")).status_code == 403
+    # S4 maker-checker over the wire: propose (analyst) -> maker can't check -> lead applies
+    sla = {**r["sla"], "jurisdiction": "API test"}
+    assert t.put("/api/rules", json={"sla": sla}, headers=H("user2")).json()["status"] == "proposed"
+    assert t.post("/api/rules/confirm", headers=H("user2")).status_code == 403
+    assert t.get("/api/rules").json()["pending"]["proposed_by"] == "A. Okafor"
+    assert t.post("/api/rules/confirm", headers=H("lead")).json()["status"] == "applied"
+    assert t.get("/api/rules").json()["sla"]["jurisdiction"] == "API test"
+    assert any(a["event"] == "config.applied" for a in t.get("/api/config-audit").json())
+    # S9: the outbox carries the earlier decision flow, cursor-pollable
+    ob = t.get("/api/outbox").json()
+    assert any(e["topic"] == "case.decided" and e["payload"]["case_id"] == CID for e in ob), ob[:3]
+    last_id = ob[-1]["event_id"]
+    assert t.get(f"/api/outbox?after={last_id}").json() == []
     r = t.get("/api/export/regulatory.csv")
     assert r.status_code == 200 and r.text.splitlines()[0].startswith("case_id,opened_at,reason_code"), r.text[:80]
     assert len(t.get("/api/skills").json()) == 10

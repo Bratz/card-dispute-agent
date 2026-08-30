@@ -254,29 +254,72 @@ def cardholder_raise(payload: dict = Body(...)):
 def rules_get():
     c = db()
     try:
-        return {"reasons": service.get_rules(c), "policy": service.get_policy(c), "sla": service.get_sla(c)}
+        return {"reasons": service.get_rules(c), "policy": service.get_policy(c),
+                "sla": service.get_sla(c), "pending": service.get_pending_config(c)}
     finally:
         c.close()
 
 
 @app.put("/api/rules")
 def rules_put(payload: dict = Body(...), x_user: str = Header(default="")):
+    """Maker-checker: a PUT is a PROPOSAL; a different team lead confirms it."""
+    change = {}
+    if payload.get("reasons") is not None:
+        change["reason_rules"] = payload["reasons"]
+    if payload.get("policy") is not None:
+        change["approval_policy"] = payload["policy"]
+    if payload.get("sla") is not None:
+        change["sla_clocks"] = payload["sla"]
     c = db()
     try:
-        if payload.get("reasons") is not None:
-            r = service.save_rules(c, payload["reasons"], x_user)
-            if r.get("error"):
-                return JSONResponse(r, status_code=403)
-        if payload.get("policy") is not None:
-            r = service.save_policy(c, payload["policy"], x_user)
-            if r.get("error"):
-                return JSONResponse(r, status_code=403)
-        if payload.get("sla") is not None:
-            r = service.save_sla(c, payload["sla"], x_user)
-            if r.get("error"):
-                return JSONResponse(r, status_code=403)
-        c.commit()
-        return {"status": "saved"}
+        r = service.propose_config(c, change, x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=r.get("code", 400))
+        return r
+    finally:
+        c.close()
+
+
+@app.post("/api/rules/confirm")
+def rules_confirm(x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.confirm_config(c, x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=r.get("code", 400))
+        return r
+    finally:
+        c.close()
+
+
+@app.post("/api/rules/discard")
+def rules_discard(x_user: str = Header(default="")):
+    c = db()
+    try:
+        r = service.discard_config(c, x_user)
+        if r.get("error"):
+            return JSONResponse(r, status_code=r.get("code", 400))
+        return r
+    finally:
+        c.close()
+
+
+@app.get("/api/config-audit")
+def config_audit():
+    c = db()
+    try:
+        return service.get_config_audit(c)
+    finally:
+        c.close()
+
+
+@app.get("/api/outbox")
+def outbox(after: int = 0, limit: int = 50):
+    """Downstream integration feed: poll with your own cursor (event_id)."""
+    c = db()
+    try:
+        return [{**e, "payload": service.jl(e["payload"])} for e in service.rows(
+            c, "SELECT * FROM outbox WHERE event_id > ? ORDER BY event_id LIMIT ?", (after, min(limit, 200)))]
     finally:
         c.close()
 

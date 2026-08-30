@@ -310,13 +310,13 @@ Phase 1 = must land before any topology change or real deployment.
   directory lookup, roles come from claims. Boundary is already server-side,
   change is localized.
 
-- [ ] **S4. Govern the control plane** — `save_rules`/`save_policy` write
+- [x] **S4. Govern the control plane** — `save_rules`/`save_policy` write
   config with NO audit entry (audit_entry requires case_id — the schema gap).
   A lead can silently change who approves a chargeback. Fix: caseless audit
   path + dual control on policy changes; move `DECISION_LEAD_LIMIT` into the
   policy config with everything else.
 
-- [ ] **S5. Version the agent's instructions** — `agent_run` records tool
+- [x] **S5. Version the agent's instructions** — `agent_run` records tool
   calls but not which SKILL.md/mandate text the agent followed. Fix: content
   hash of each skill read + mandate, stamped into the transcript.
 
@@ -333,7 +333,7 @@ Phase 1 = must land before any topology change or real deployment.
 
 - [ ] **S8. Postgres port** — json_extract→jsonb, INSERT OR REPLACE→ON
   CONFLICT, replace PRAGMA-based migrations with a schema_version table.
-- [ ] **S9. Transactional outbox** — nothing emits events (case decided,
+- [x] **S9. Transactional outbox** — nothing emits events (case decided,
   chargeback raised) for downstream consumers; write outbox rows in the same
   transaction as the audit entry.
 - [ ] **S10. Observability retrofit** — `/metrics` in Prometheus exposition

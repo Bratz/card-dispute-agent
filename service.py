@@ -62,19 +62,27 @@ def init_db(path=DB_PATH, reset=False):
             c.execute("SELECT %s FROM dispute_case LIMIT 1" % col)
         except sqlite3.OperationalError:
             c.execute("ALTER TABLE dispute_case ADD COLUMN %s TEXT" % col)
-    # case_action grew new action types; the CHECK is baked into the table DDL, so rebuild
-    ca = one(c, "SELECT sql FROM sqlite_master WHERE type='table' AND name='case_action'")
-    if ca and "write_off" not in ca["sql"]:
+    # constraint changes are baked into table DDL, so those migrations rebuild
+    def _rebuild(table, index_sql):
+        c.commit()                                    # PRAGMA foreign_keys is a no-op inside a txn
         c.execute("PRAGMA foreign_keys=OFF")
-        c.execute("PRAGMA legacy_alter_table=ON")     # keep approval's FK pointing at 'case_action'
-        c.execute("ALTER TABLE case_action RENAME TO case_action_v0")
-        c.executescript(ddl)                     # recreates case_action with the current CHECK
-        c.execute("INSERT INTO case_action SELECT * FROM case_action_v0")
+        c.execute("PRAGMA legacy_alter_table=ON")     # keep referencing FKs pointing at the original name
+        c.execute('ALTER TABLE "%s" RENAME TO "%s_v0"' % (table, table))
+        c.executescript(ddl)                          # recreates the table from the current schema
+        c.execute('INSERT INTO "%s" SELECT * FROM "%s_v0"' % (table, table))
         c.execute("PRAGMA legacy_alter_table=OFF")
-        c.execute("DROP TABLE case_action_v0")
-        c.execute("CREATE INDEX IF NOT EXISTS ca_case ON case_action(case_id)")
+        c.execute('DROP TABLE "%s_v0"' % table)
+        c.execute(index_sql)
+        c.commit()
         c.execute("PRAGMA foreign_keys=ON")
+    ca = one(c, "SELECT sql FROM sqlite_master WHERE type='table' AND name='case_action'")
+    if ca and "write_off" not in ca["sql"]:           # case_action grew new action types
+        _rebuild("case_action", "CREATE INDEX IF NOT EXISTS ca_case ON case_action(case_id)")
+    au = one(c, "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_entry'")
+    if au and "case_id TEXT NOT NULL" in au["sql"]:   # audit gained caseless (config) entries
+        _rebuild("audit_entry", "CREATE INDEX IF NOT EXISTS au_case ON audit_entry(case_id, audit_id)")
     if reset:
+        c.commit()                                    # same: the pragma must land outside a txn
         c.execute("PRAGMA foreign_keys=OFF")
         for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
             c.execute('DELETE FROM "%s"' % t)
@@ -102,6 +110,11 @@ def log_audit(c, case_id, actor, event, reason=None, ref=None):
 
 def request_intervention(c, case_id, reason):
     log_audit(c, case_id, "system", "intervention.requested", reason)
+
+def emit_event(c, topic, payload):
+    """Transactional outbox: written on the caller's connection, committed with
+    the state change it mirrors. Downstream systems poll /api/outbox."""
+    c.execute("INSERT INTO outbox(at, topic, payload) VALUES(?,?,?)", (now(), topic, jd(payload)))
 
 # ---------------------------------------------------------------- redaction (intake)
 PAN_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
@@ -339,8 +352,9 @@ DEFAULT_POLICY = {
     "record_decision":       "analyst",
     "deny_dispute":          "team_lead",
     "write_off":             "team_lead",
+    "decision_lead_limit":   500.0,   # decisions above this amount need the lead (editable in Administration)
 }
-DECISION_LEAD_LIMIT = 500.0   # ponytail: one threshold; per-currency tiers when a real book needs them
+DECISION_LEAD_LIMIT = 500.0           # fallback when the policy config lacks the key
 WRITE_OFF_LIMIT = 25.0        # below cost-to-work: a chargeback costs more to raise than it recovers
 
 def role_allows(role, needed):
@@ -387,7 +401,10 @@ DEFAULT_RULES = {
 
 def _config_get(c, key, default):
     r = one(c, "SELECT value FROM app_config WHERE key=?", (key,))
-    return jl(r["value"]) if r else default
+    if r:
+        return jl(r["value"])
+    # copy: handing back the module default lets a caller mutate it in place
+    return jl(jd(default)) if default is not None else None
 
 def _config_set(c, key, value):
     c.execute("INSERT INTO app_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -396,22 +413,66 @@ def _config_set(c, key, value):
 def get_rules(c):
     return _config_get(c, "reason_rules", DEFAULT_RULES)
 
-def save_rules(c, rules, user_key):
-    u = USERS.get(user_key)
-    if not u or u["role"] != "team_lead":
-        return {"error": "only the Team Lead can change the rules"}
-    _config_set(c, "reason_rules", rules)
-    return {"status": "saved"}
-
 def get_policy(c):
     return _config_get(c, "approval_policy", DEFAULT_POLICY)
 
-def save_policy(c, policy, user_key):
-    u = USERS.get(user_key)
-    if not u or u["role"] != "team_lead":
-        return {"error": "only the Team Lead can change the approval policy"}
-    _config_set(c, "approval_policy", policy)
-    return {"status": "saved"}
+# ---- maker-checker on the control plane: the rules that govern every case
+# change under the same discipline as a case decision. One person proposes,
+# a DIFFERENT team lead confirms, and both steps land on the (caseless) audit.
+# With the demo's single lead: an analyst proposes, S. Iyer confirms.
+CONFIG_KEYS = {"reason_rules", "approval_policy", "sla_clocks"}
+
+def get_pending_config(c):
+    return _config_get(c, "pending_config", None)
+
+def propose_config(c, change, user_key):
+    user = USERS.get(user_key)
+    if not user or not can_work(user_key):
+        return {"error": "propose a change from an analyst or team-lead profile", "code": 403}
+    if not change or not set(change) <= CONFIG_KEYS:
+        return {"error": "unknown config section"}
+    if get_pending_config(c):
+        return {"error": "a change is already awaiting confirmation — confirm or discard it first"}
+    _config_set(c, "pending_config", {"change": change, "proposed_by": user["name"], "at": now()})
+    log_audit(c, None, user["name"], "config.proposed",
+              ", ".join(sorted(change)) + " — awaiting confirmation by a second person")
+    c.commit()
+    return {"status": "proposed", "by": user["name"]}
+
+def confirm_config(c, user_key):
+    user = USERS.get(user_key)
+    p = get_pending_config(c)
+    if not p:
+        return {"error": "nothing awaiting confirmation"}
+    if not user or user["role"] != "team_lead":
+        return {"error": "confirming a config change needs a team lead", "code": 403}
+    if user["name"] == p["proposed_by"]:
+        return {"error": "four-eyes: the proposer cannot confirm their own change", "code": 403}
+    ref = {}
+    for k, v in p["change"].items():
+        ref[k] = {"before": _config_get(c, k, None), "after": v}
+        _config_set(c, k, v)
+    c.execute("DELETE FROM app_config WHERE key='pending_config'")
+    log_audit(c, None, user["name"], "config.applied",
+              ", ".join(sorted(p["change"])) + " — proposed by " + p["proposed_by"], ref=ref)
+    c.commit()
+    return {"status": "applied", "by": user["name"]}
+
+def discard_config(c, user_key):
+    user = USERS.get(user_key)
+    p = get_pending_config(c)
+    if not p:
+        return {"error": "nothing awaiting confirmation"}
+    if not user or (user["name"] != p["proposed_by"] and user["role"] != "team_lead"):
+        return {"error": "only the proposer or a team lead can discard", "code": 403}
+    c.execute("DELETE FROM app_config WHERE key='pending_config'")
+    log_audit(c, None, user["name"], "config.discarded", ", ".join(sorted(p["change"])))
+    c.commit()
+    return {"status": "discarded"}
+
+def get_config_audit(c, limit=20):
+    """The control plane's own trail: every proposed/applied/discarded change."""
+    return rows(c, "SELECT * FROM audit_entry WHERE case_id IS NULL ORDER BY audit_id DESC LIMIT ?", (limit,))
 
 def chargeback_rules(c, reason_code):
     return get_rules(c).get(reason_code, {"text": reason_code, "required": [], "window_days": 30, "actions": []})
@@ -579,6 +640,8 @@ def execute_action(c, aid, mode="ok", user_key="lead"):
                   (led["ref"], jd({"reconciled": True}), now(), aid))
         log_audit(c, a["case_id"], "orchestration", "action.reconciled",
                   "external state was completed; no second effect (retried by %s)" % exec_by)
+        emit_event(c, "action.executed", {"case_id": a["case_id"], "action_id": aid,
+                                          "type": a["type"], "external_ref": led["ref"], "reconciled": True})
         _register_from_action(c, a)
         return {"status": "done", "reconciled": True, "external_ref": led["ref"]}
     c.execute("UPDATE case_action SET status='executing' WHERE action_id=?", (aid,))
@@ -588,6 +651,8 @@ def execute_action(c, aid, mode="ok", user_key="lead"):
         c.execute("UPDATE case_action SET status='done', external_ref=?, result=?, executed_at=? WHERE action_id=?",
                   (led["ref"], jd({"ok": True}), now(), aid))
         log_audit(c, a["case_id"], "orchestration", "action.executed", "%s by %s" % (a["type"], exec_by))
+        emit_event(c, "action.executed", {"case_id": a["case_id"], "action_id": aid,
+                                          "type": a["type"], "external_ref": led["ref"]})
         _register_from_action(c, a)
         return {"status": "done", "external_ref": led["ref"]}
     if res == "timeout":
@@ -634,8 +699,9 @@ def record_decision(c, cid, outcome, user_key="user1"):
     if not case:
         return {"error": "no such case"}
     # authority tiering: the policy names the base role; high value needs the lead
-    needed = get_policy(c).get("record_decision", "analyst")
-    if (case["amount"] or 0) > DECISION_LEAD_LIMIT:
+    policy = get_policy(c)
+    needed = policy.get("record_decision", "analyst")
+    if (case["amount"] or 0) > float(policy.get("decision_lead_limit", DECISION_LEAD_LIMIT)):
         needed = "team_lead"
     if not role_allows(user["role"], needed):
         return {"error": "a decision on this case needs a %s — you are signed in as %s (%s)"
@@ -678,6 +744,7 @@ def record_decision(c, cid, outcome, user_key="user1"):
     register_request(c, cid, "cardholder", ["correspondence"], "resolution: outcome notice to the cardholder")
     log_audit(c, cid, "orchestration", "resolution.progressed",
               "outcome notice and filings registered per party — the register carries the resolution too")
+    emit_event(c, "case.decided", {"case_id": cid, "outcome": outcome, "terminal": terminal, "by": user["name"]})
     return {"status": "recorded", "by": user["name"]}
 
 def record_network_outcome(c, cid, result, user_key="lead"):
@@ -698,6 +765,7 @@ def record_network_outcome(c, cid, result, user_key="lead"):
     c.execute("UPDATE dispute_case SET stage='resolved', status='closed', updated_at=? WHERE case_id=?", (now(), cid))
     c.execute("UPDATE deadline SET status='met' WHERE case_id=? AND status='pending'", (cid,))
     log_audit(c, cid, user["name"], "network.outcome", "chargeback %s — case closed" % result)
+    emit_event(c, "network.outcome", {"case_id": cid, "result": result})
     return {"status": "closed", "network_outcome": result}
 
 def what_changed(c, cid):
@@ -1302,6 +1370,7 @@ def open_case(c, cid, **k):
                  VALUES(?,?,?,?,?,?,?,?, 'gathering', ?, ?)""",
               (cid, k["customer_id"], k["card_id"], k["txn"], k.get("arn"), k["reason"], k["amount"], k["ccy"], now(), now()))
     log_audit(c, cid, "intake", "case.raised", k.get("reason"))
+    emit_event(c, "case.raised", {"case_id": cid, "reason_code": k["reason"], "amount": k.get("amount")})
     log_audit(c, cid, "orchestration", "provisional_credit.posted",
               "provisional credit posted pending investigation (accounting hook — GL posting out of scope)")
     if k["reason"] == "10.4":   # a fraud claim has side effects beyond the case

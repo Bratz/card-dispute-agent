@@ -11,8 +11,14 @@ other project is used here.
 Enable: set ANTHROPIC_API_KEY, then call the /api/cases/{id}/run-agent endpoint
 with CARD_DISPUTE_LLM=1, or use run_journey_llm() directly.
 """
-import os, glob, json
+import os, glob, hashlib, json
 import service as S
+
+
+def _ihash(text):
+    """Version stamp for agent instructions: which mandate/skill text the run
+    actually followed — the auditor's 'what was it told at the time'."""
+    return hashlib.sha256((text or "").encode()).hexdigest()[:12]
 
 SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
 MODEL = os.environ.get("CARD_DISPUTE_MODEL", "claude-sonnet-4-5")
@@ -255,6 +261,9 @@ def run_agent(conn, cid, agent_key, max_turns=24):
     msgs = [{"role": "user",
              "content": "You are the %s agent on case %s. Your skills:\n%s\nWork the case now." % (agent["name"], cid, catalog)}]
     transcript, turns, calls, tin, tout, nudged = [], 0, 0, 0, 0, False
+    transcript.append({"instructions": {"mandate": _ihash(system),
+                                        "skills": {n: _ihash(skills[n]["body"])
+                                                   for n in agent["skills"] if n in skills}}})
     rid = S.start_agent_run(conn, agent_key, case_id=cid)
     while turns < max_turns:
         if cid in CANCELLED:                     # checked at turn boundaries, never mid-tool
@@ -347,6 +356,8 @@ def run_triage_agent(conn, iid, max_turns=12):
     client = _client()
     msgs = [{"role": "user", "content": "Triage intake item %s now." % iid}]
     transcript, turns, calls, tin, tout, nudged = [], 0, 0, 0, 0, False
+    transcript.append({"instructions": {"mandate": _ihash(system),
+                                        "skills": {"intake-triage": _ihash((skills.get("intake-triage") or {}).get("body"))}}})
     rid = S.start_agent_run(conn, "A0", intake_id=iid)
     while turns < max_turns:
         turns += 1

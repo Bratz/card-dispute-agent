@@ -110,7 +110,7 @@ CREATE TABLE approval (
 
 CREATE TABLE audit_entry (
   audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  case_id TEXT NOT NULL REFERENCES dispute_case(case_id),
+  case_id TEXT REFERENCES dispute_case(case_id),   -- NULL = configuration/system event
   at TEXT NOT NULL, actor TEXT NOT NULL, event TEXT NOT NULL,
   reason TEXT, ref TEXT
 );
@@ -174,6 +174,14 @@ CREATE TABLE agent_run (
 CREATE TABLE app_config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- Transactional outbox: rows written in the same transaction as the audit
+-- entry they mirror. Downstream consumers poll GET /api/outbox with their own
+-- cursor (event_id) — at-least-once by design, nothing is marked dispatched.
+CREATE TABLE outbox (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, topic TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}'
 );
 
 -- The mock external world, so partial-failure recovery can reconcile against a
